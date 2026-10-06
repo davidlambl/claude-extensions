@@ -697,6 +697,32 @@ describe('context-bar', () => {
     ])
   })
 
+  test('with auto-compaction off, leaves the buffer /compact needs out of the room left, as /context does', async ($, on) => {
+    const { autoCompactThreshold, ...rest } = BREAKDOWN
+    const off: SessionContextBreakdown = {
+      ...rest,
+      isAutoCompactEnabled: false,
+      categories: BREAKDOWN.categories.map(row =>
+        row.kind === 'buffer'
+          ? { ...row, name: 'Compact buffer', tokens: 3_000 }
+          : row.kind === 'free'
+            ? { ...row, tokens: 134_600 }
+            : row,
+      ),
+    }
+    engine(on, () => off)
+    mock.store(on)
+    await start($)
+    await toggle($)
+    const ui = await $.ui.mount({ ...band(), surface: 'terminal' })
+
+    // The percentage is of the whole window, as /context's 31% is; only the room left leaves the buffer out.
+    expect(await textOf(ui, 'header')).toContain('62.4k of 200k')
+    expect(await textOf(ui, 'header')).toContain(' 31% ')
+    // 200k less the 3k buffer and the 62.4k in use: /context's 134.6k free, in whole thousands from 100k.
+    expect(await textOf(ui, 'legend')).toContain('free 135k')
+  })
+
   test('colors the percentage by how close compaction is', async ($, on) => {
     let current = BREAKDOWN
     engine(on, () => current)

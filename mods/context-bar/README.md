@@ -79,7 +79,7 @@ Pressing `skills ▸` lists the skills by what they cost, with the rest one pres
   - The overhead read from the free local estimates, which in a long session came to nearly twice what `/context` counted (60k against 32k). The card now counts the overhead as `/context` does, and only when it changes.
   - MCP's two categories read alike on the card, so they became one `mcp` entry. The legend's swatches are now the bar's own seven-eighths cell. As full blocks, they ran into the gap between cells and sat out of line with the bar.
   - In VS Code the card had nowhere to draw, because the extension doesn't draw mod UI yet. `/context-bar` answers with an exact snapshot there, and the card has a pane ready for when VS Code draws one.
-  - Tested with `claude plugin test` (95 tests) and by breaking the code on purpose to check the tests catch it. The screenshots come from driving a real Claude Code session; [`tools/screenshots`](../../tools/screenshots/) takes them again from `screenshots/scenario.json`.
+  - Tested with `claude plugin test` (100 tests) and by breaking the code on purpose to check the tests catch it. The screenshots come from driving a real Claude Code session; [`tools/screenshots`](../../tools/screenshots/) takes them again from `screenshots/scenario.json`.
 
 ## Run it
 
@@ -113,7 +113,7 @@ claude --plugin-dir ./claude-extensions/mods/context-bar
 - **The overhead is counted only when it changes.** Each count sends one token-count request per tool and memory file, as `/context` does, so the card counts when it first shows and whenever the overhead changes. A change under 2% of a category, or under 200 tokens, waits for the next count.
 - **If a count fails, the card shows the estimates**, which can run well over `/context`'s figures, until the overhead changes again.
 - **The card updates after each turn**, a compaction, a `/clear` and a `/resume`, not during a turn.
-- **The meter fills toward compaction**, so its percentage is of the auto-compact point, not the whole window. With auto-compaction off, it fills toward the end of the window.
+- **The meter fills toward compaction**, so its percentage is of the auto-compact point, not the whole window. With auto-compaction off, it fills toward the end of the window, less the small buffer `/compact` needs, so its free space and its percentage both read as `/context`'s do.
 - **Only some categories open to items.** The mod API lists the parts of mcp (its instructions, and its loaded tools by server), skills, agents and memory files, but not of tools or system.
 - **The short labels follow `/context`'s category names**, with MCP server instructions and MCP tools together as `mcp`. If an update renames a category, it shows under its own name, lowercased.
 - **Pressing a button** needs the fullscreen terminal for a click; `/context-bar overhead [category]` works anywhere.

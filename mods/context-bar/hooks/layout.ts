@@ -82,10 +82,16 @@ function itemsOf(category: ContextBarItem, breakdown: SessionContextBreakdown): 
 export type OverheadPart = { label: string; tokens: number; items?: ContextBarItem[] }
 
 export type Meter = {
-  /** What the meter fills toward: where auto-compaction runs, or the window's end when it is off. */
+  /**
+   * What the meter fills toward: where auto-compaction runs, or, when it is
+   * off, the window's end less the buffer held back for /compact.
+   */
   capacity: number
   used: number
-  /** `used` over `capacity`, as a whole percentage; past 100 once over. */
+  /**
+   * `used` as a whole percentage of where auto-compaction runs, or, when it is
+   * off, of the whole window, as /context gives it; past 100 once over.
+   */
   percent: number
   messages: number
   /** Every other category in use, largest first, each with its items largest first. */
@@ -93,9 +99,18 @@ export type Meter = {
   free: number
 }
 
-/** The window as a meter: the conversation, the overhead, and the room left before compaction. */
+/**
+ * The window as a meter: the conversation, the overhead, and the room left
+ * before compaction. The compaction point already sits a buffer below the
+ * window's end; with auto-compaction off, /context still holds a smaller
+ * buffer back for /compact, so the meter stops short of the end by as much
+ * and its free space reads as /context's does, while its percentage stays of
+ * the whole window, as /context's does.
+ */
 export function meter(usage: ContextBarUsage): Meter {
-  const capacity = usage.compactsAt ?? usage.maxTokens
+  const held = usage.segments.filter(segment => segment.kind === 'buffer').reduce((sum, segment) => sum + segment.tokens, 0)
+  const capacity = usage.compactsAt ?? (held < usage.maxTokens ? usage.maxTokens - held : usage.maxTokens)
+  const scale = usage.compactsAt ?? usage.maxTokens
   const inUse = usage.segments.filter(segment => segment.kind === 'used')
   const byLabel = new Map<string, OverheadPart>()
   for (const { name, tokens, items } of inUse.filter(segment => segment.name !== MESSAGES)) {
@@ -113,7 +128,7 @@ export function meter(usage: ContextBarUsage): Meter {
   return {
     capacity,
     used: usage.totalTokens,
-    percent: Math.round((usage.totalTokens / capacity) * 100),
+    percent: Math.round((usage.totalTokens / scale) * 100),
     messages: inUse.find(segment => segment.name === MESSAGES)?.tokens ?? 0,
     overhead: { tokens: parts.reduce((sum, part) => sum + part.tokens, 0), parts },
     free: Math.max(0, capacity - usage.totalTokens),
@@ -225,11 +240,12 @@ export function orList(words: readonly string[]): string {
   return words.length < 2 ? (words[0] ?? '') : `${words.slice(0, -1).join(', ')} or ${words[words.length - 1]}`
 }
 
-/** The badge's status color: green while compaction is far off, yellow nearing it, red close. */
+/**
+ * The badge's status color, from the percentage it shows: green while
+ * compaction (or the window's end) is far off, yellow nearing it, red close.
+ */
 export function badgeColor(m: Meter): 'success' | 'warning' | 'error' {
-  const fill = m.used / m.capacity
-
-  return fill < 0.5 ? 'success' : fill < 0.8 ? 'warning' : 'error'
+  return m.percent < 50 ? 'success' : m.percent < 80 ? 'warning' : 'error'
 }
 
 /**

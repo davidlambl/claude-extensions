@@ -4,6 +4,7 @@ import type { SessionContextBreakdown } from 'claude-code'
 import type { ContextBarUsage } from '../types'
 import {
   allocateCells,
+  badgeColor,
   barRuns,
   breakdownLines,
   formatTokens,
@@ -206,12 +207,64 @@ describe('meter', () => {
     })
   })
 
-  test('fills toward the end of the window when auto-compaction is off', () => {
-    const m = meter({ ...usage, compactsAt: null })
+  /**
+   * The window as /context lists it with auto-compaction off: no compaction
+   * point, the buffers held back for /compact, the rest free.
+   */
+  function off(buffers: number[], totalTokens = 49_000): ContextBarUsage {
+    const held = buffers.reduce((sum, n) => sum + n, 0)
+
+    return {
+      ...usage,
+      segments: [
+        ...usage.segments.filter(segment => segment.kind === 'used' && segment.name !== 'Messages'),
+        used('Messages', totalTokens - 19_500),
+        ...buffers.map(tokens => ({ name: 'Compact buffer', tokens, kind: 'buffer' as const })),
+        { name: 'Free space', tokens: Math.max(0, 200_000 - totalTokens - held), kind: 'free' as const },
+      ],
+      totalTokens,
+      compactsAt: null,
+    }
+  }
+
+  test('with auto-compaction off, leaves the buffer for /compact out of the room left, and reads the percentage of the window', () => {
+    // /context reads 98.8k of 200k as 49%, with 98.2k free past its 3k compact buffer.
+    const m = meter(off([3_000], 98_800))
+
+    expect(m.capacity).toBe(197_000)
+    expect(m.free).toBe(98_200)
+    expect(m.percent).toBe(49)
+    expect(badgeColor(m)).toBe('success')
+  })
+
+  test('adds up every buffer held back', () => {
+    const m = meter(off([2_000, 1_000]))
+
+    expect(m.capacity).toBe(197_000)
+    expect(m.free).toBe(148_000)
+  })
+
+  test('fills toward the whole window when auto-compaction is off and nothing is held back', () => {
+    const m = meter(off([]))
+
+    expect(m.capacity).toBe(200_000)
+    expect(m.free).toBe(151_000)
+  })
+
+  test('falls back to the whole window should a buffer ever fill it', () => {
+    const m = meter(off([250_000]))
 
     expect(m.capacity).toBe(200_000)
     expect(m.percent).toBe(25)
     expect(m.free).toBe(151_000)
+  })
+
+  test('follows the compaction point where an auto-compact window sets it further in than the buffer', () => {
+    // Unlike `usage`, whose 155k is the window less its 45k buffer, 120k is not: only reading the point itself passes.
+    const m = meter({ ...usage, compactsAt: 120_000 })
+
+    expect(m.capacity).toBe(120_000)
+    expect(m.free).toBe(71_000)
   })
 
   test('has no room left, not less than none, past compaction', () => {
