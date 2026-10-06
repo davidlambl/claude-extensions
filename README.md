@@ -6,7 +6,7 @@ Mods, skills and plugins for [Claude Code](https://claude.com/claude-code). The 
 | --- | --- | --- |
 | [context-bar](mods/context-bar/) | mod | Your context window as a meter above the prompt: the conversation, the overhead every request carries, and the room left before compaction, with a drill-down into the overhead. `/context-bar` shows or hides it. |
 
-![Context Bar above the prompt: 135k used, compaction at 167k, 81%](mods/context-bar/screenshots/context-bar-full.png)
+![Context Bar above the prompt: 134k used, compaction at 167k, 80%](mods/context-bar/screenshots/context-bar-full.png)
 
 ## Install
 

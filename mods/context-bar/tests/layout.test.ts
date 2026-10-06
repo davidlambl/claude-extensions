@@ -2,7 +2,21 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { SessionContextBreakdown } from 'claude-code'
 
 import type { ContextBarUsage } from '../types'
-import { allocateCells, barRuns, formatTokens, meter, packRows, rankRows, scaleBars, toUsage, topItems } from '../hooks/layout'
+import {
+  allocateCells,
+  barRuns,
+  breakdownLines,
+  formatTokens,
+  hasShifted,
+  meter,
+  overheadOf,
+  packRows,
+  rankRows,
+  scaleBars,
+  toUsage,
+  topItems,
+  withCount,
+} from '../hooks/layout'
 
 describe('allocateCells', () => {
   const cases: [string, number[], number, number[]][] = [
@@ -206,6 +220,102 @@ describe('meter', () => {
     expect(m.free).toBe(0)
     expect(m.percent).toBe(103)
   })
+
+  test("puts both of MCP's categories under one mcp entry, with what each is made of", () => {
+    const m = meter({
+      ...usage,
+      segments: [
+        used('MCP server instructions', 1_300),
+        { ...used('MCP tools', 900), items: [{ name: 'playwright', tokens: 900 }] },
+        used('Messages', 29_500),
+      ],
+    })
+
+    expect(m.overhead.parts).toEqual([
+      {
+        label: 'mcp',
+        tokens: 2_200,
+        items: [
+          { name: 'playwright', tokens: 900 },
+        ],
+      },
+    ])
+  })
+})
+
+describe('the exact count', () => {
+  const used = (name: string, tokens: number) => ({ name, tokens, kind: 'used' as const })
+  const estimate: ContextBarUsage = {
+    segments: [
+      used('System prompt', 5_600),
+      used('System tools', 34_100),
+      used('Messages', 258_300),
+      { name: 'Free space', tokens: 682_000, kind: 'free' },
+    ],
+    totalTokens: 298_000,
+    maxTokens: 1_000_000,
+    compactsAt: null,
+  }
+
+  test('takes the overhead from the count and leaves the conversation the rest of the total', () => {
+    const counted = withCount(estimate, {
+      basis: [],
+      segments: [used('System prompt', 2_600), used('System tools', 14_800)],
+    })
+
+    expect(counted.totalTokens).toBe(298_000)
+    expect(meter(counted).overhead.tokens).toBe(17_400)
+    expect(meter(counted).messages).toBe(280_600)
+    expect(counted.segments.find(segment => segment.kind === 'free')?.tokens).toBe(682_000)
+  })
+
+  test('keeps the estimates without a count, or when the count failed', () => {
+    expect(withCount(estimate, null)).toBe(estimate)
+    expect(withCount(estimate, { basis: [], segments: null })).toBe(estimate)
+  })
+
+  test('reads the overhead as every category in use but the conversation', () => {
+    expect(overheadOf(estimate).map(segment => segment.name)).toEqual(['System prompt', 'System tools'])
+  })
+
+  const basis = [
+    { name: 'System tools', tokens: 34_100 },
+    { name: 'Skills', tokens: 10_000 },
+  ]
+  const cases: [string, { name: string; tokens: number }[], boolean][] = [
+    ['stands while nothing moved', basis, false],
+    ['stands through drift under 200 tokens', [{ name: 'System tools', tokens: 34_100 }, { name: 'Skills', tokens: 10_150 }], false],
+    ['stands through drift under 2% of a large category', [{ name: 'System tools', tokens: 34_700 }, { name: 'Skills', tokens: 10_000 }], false],
+    ['shifts when a category moves past both', [{ name: 'System tools', tokens: 35_100 }, { name: 'Skills', tokens: 10_000 }], true],
+    ['shifts when a category appears', [...basis, { name: 'MCP tools', tokens: 300 }], true],
+    ['shifts when a category goes', basis.slice(0, 1), true],
+  ]
+
+  for (const [name, estimates, want] of cases) {
+    test(name, () => {
+      expect(hasShifted(estimates, basis)).toBe(want)
+    })
+  }
+})
+
+describe('breakdownLines', () => {
+  const parts = [
+    { label: 'tools', tokens: 34_100 },
+    { label: 'memory files', tokens: 7_100 },
+    { label: 'agents', tokens: 3_700 },
+  ]
+
+  test('keeps the breakdown on one line where it fits', () => {
+    expect(breakdownLines(parts, 80)).toEqual(['overhead: tools 34.1k, memory files 7.1k, agents 3.7k'])
+  })
+
+  test('breaks only between entries, never inside one', () => {
+    expect(breakdownLines(parts, 34)).toEqual(['overhead: tools 34.1k,', 'memory files 7.1k, agents 3.7k'])
+  })
+
+  test('has no lines for no overhead', () => {
+    expect(breakdownLines([], 80)).toEqual([])
+  })
 })
 
 describe('toUsage items', () => {
@@ -273,6 +383,24 @@ describe('toUsage items', () => {
     expect(itemsOf('Skills')).toEqual([
       { name: 'dataviz', tokens: 300 },
       { name: 'superpowers:brainstorming', tokens: 400 },
+    ])
+  })
+
+  test('makes the MCP server instructions one item, so they sit beside the tools under mcp', () => {
+    const withInstructions = {
+      ...detailed,
+      categories: [
+        ...detailed.categories,
+        { name: 'MCP server instructions', tokens: 1_300, color: 'green_FOR_SUBAGENTS_ONLY', isDeferred: false, kind: 'used' as const },
+      ],
+    }
+    const mcp = meter(toUsage(withInstructions)).overhead.parts.find(part => part.label === 'mcp')
+
+    expect(mcp?.tokens).toBe(11_100)
+    expect(mcp?.items).toEqual([
+      { name: 'playwright', tokens: 5_600 },
+      { name: 'github', tokens: 4_200 },
+      { name: 'instructions', tokens: 1_300 },
     ])
   })
 

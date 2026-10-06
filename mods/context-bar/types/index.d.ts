@@ -26,6 +26,14 @@ export type ContextBarUsage = {
   compactsAt: number | null
 }
 
+/** The overhead as last counted with the token-count API, as /context counts it. */
+export type ContextBarCount = {
+  /** The overhead's local estimates when it was counted; the count is taken again once they shift. */
+  basis: ContextBarItem[]
+  /** The overhead's categories as counted, or null when the count failed and the estimates stand. */
+  segments: ContextBarSegment[] | null
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'context-bar': {
@@ -37,6 +45,8 @@ declare module 'claude-code' {
       /** The open category showing every item, not only the largest; for the session only. */
       expandedCategory: string | null
       usage: ContextBarUsage | null
+      /** The last exact count of the overhead; for the session only. */
+      counted: ContextBarCount | null
     }
   }
 }

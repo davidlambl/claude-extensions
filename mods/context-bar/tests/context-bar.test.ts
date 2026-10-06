@@ -4,8 +4,9 @@ import type { On, RenderElement, SessionContextBreakdown, SessionUsage } from 'c
 
 /**
  * /context's breakdown as the engine lists it (its names, colors and order,
- * the buffer before the free space): 62.4k of a 200k window, compaction at 155k.
- * Overhead is 32.9k of it, the conversation 29.5k.
+ * the buffer before the free space), as the token-count API counts it: 62.4k
+ * of a 200k window, compaction at 155k. Overhead is 32.9k of it, the
+ * conversation 29.5k.
  */
 const BREAKDOWN: SessionContextBreakdown = {
   categories: [
@@ -83,6 +84,30 @@ const LATER = changed({ Messages: 77_000, 'Free space': 45_100 }, 109_900, 55)
 const NEAR = changed({ Messages: 107_100, 'Free space': 15_000 }, 140_000, 70)
 const COMPACTED = changed({ Messages: 3_100, 'Free space': 119_000 }, 36_000, 18)
 const CLEARED = changed({ Messages: 0, 'Free space': 122_100 }, 32_900, 16)
+/** LATER after a tool search loaded 3k more of MCP tools into the window. */
+const LOADED = changed({ 'MCP tools': 12_800, Messages: 74_000 }, 109_900, 55)
+
+/**
+ * How far the `summary` breakdown's local estimates run from the exact count,
+ * as measured in a long session: the system prompt and tools near double, the
+ * MCP server instructions four times over.
+ */
+const OVERESTIMATE: Record<string, number> = { 'System prompt': 2, 'System tools': 2, 'MCP server instructions': 4 }
+
+/**
+ * A breakdown as `summary` estimates it: the same total, from the last
+ * response's usage, with the overhead's categories overestimated and the
+ * conversation taking what they leave.
+ */
+function estimated(exact: SessionContextBreakdown): SessionContextBreakdown {
+  const rows = exact.categories.map(row => ({ ...row, tokens: Math.round(row.tokens * (OVERESTIMATE[row.name] ?? 1)) }))
+  const overhead = rows.filter(row => row.kind === 'used' && row.name !== 'Messages').reduce((sum, row) => sum + row.tokens, 0)
+
+  return {
+    ...exact,
+    categories: rows.map(row => (row.name === 'Messages' ? { ...row, tokens: Math.max(0, exact.totalTokens - overhead) } : row)),
+  }
+}
 
 const SURFACES = ['terminal', 'desktop'] as const
 
@@ -95,17 +120,32 @@ function band(bodyColumns = 80, hasSurvey = false) {
   } as const
 }
 
+/** Runs the work the plugin left on the clock, as the exact count; each test's engine sets it. */
+let settle = async () => {}
+
 /**
  * Stands in for the engine beneath the plugin: the session it starts, the
- * commands it lists, an empty band, and the usage op, which itemizes the
- * window as `current()` has it only when a breakdown is asked for.
+ * commands it lists, an empty band, a clock the test advances, and the usage
+ * op, which itemizes the window only when a breakdown is asked for: `full`
+ * exactly as `current()` has it, `summary` as estimated. Counts the exact
+ * counts it was asked for; with `countFails`, refuses them.
  */
-function engine(on: On, current: () => SessionContextBreakdown) {
+function engine(on: On, current: () => SessionContextBreakdown, countFails = false) {
+  const clock = mock.clock(on)
+  const asked = { full: 0, clock }
+  settle = () => clock.advance(1)
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
-  on('session.usage', ($, e) => ({ value: usage(current(), e.breakdown !== undefined) }))
+  on('session.usage', ($, e) => {
+    if (e.breakdown !== 'full') return { value: usage(estimated(current()), e.breakdown !== undefined) }
+    asked.full += 1
+
+    return countFails ? { deny: 'the token-count API is unavailable' } : { value: usage(current(), true) }
+  })
   on('session.measure', ($, e) => ({ changed: e.changed }))
   on('ui.render', { component: 'AbovePrompt' }, () => ({ type: 'Box', children: [] }))
+
+  return asked
 }
 
 function usage(breakdown: SessionContextBreakdown, isItemized: boolean): SessionUsage {
@@ -116,6 +156,7 @@ function usage(breakdown: SessionContextBreakdown, isItemized: boolean): Session
 
 async function start($: Engine) {
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  await settle()
 }
 
 async function toggle($: Engine) {
@@ -125,11 +166,13 @@ async function toggle($: Engine) {
     origin: { kind: 'composer' },
     presentation: { isFullscreen: true, columns: 85 },
   })
+  await settle()
 }
 
 /** A turn ended and the window it measured is `breakdown`. */
 async function measure($: Engine, breakdown: SessionContextBreakdown) {
   await $.session.measure({ context: usage(breakdown, false).context, rateLimits: [], changed: ['context'] })
+  await settle()
 }
 
 type Drawn = { type: string; props?: Record<string, unknown>; children?: (Drawn | string)[] }
@@ -183,19 +226,27 @@ const drillRows = (ui: Drawing) => rowsOf(ui, 'drill')
 const plain = (rows: [string, number][]) => rows.map(([text]) => text.replace(/▉+/, '▉').replace(/ +/g, ' ').trim())
 
 async function overhead($: Engine, category = '') {
-  return $.command.run({
+  const result = await $.command.run({
     command: 'context-bar',
     args: `overhead ${category}`.trim(),
     origin: { kind: 'composer' },
     presentation: { isFullscreen: true, columns: 85 },
   })
+  await settle()
+
+  return result
 }
 
-/** The colors of the legend's swatches, in order. */
+/** The colors of the legend's swatches, in order: each is one of the bar's own cells, as wide as one. */
 async function swatchColors(ui: Drawing): Promise<unknown[]> {
   const legend = await keyed(ui, 'legend')
 
-  return (legend ? descendants(legend) : []).filter(node => shown(node) === '█').map(node => node.props?.color)
+  return (legend ? descendants(legend) : []).filter(node => shown(node) === '▉').map(node => node.props?.color)
+}
+
+/** The lines of the box under `key`, each as the text it shows. */
+async function linesOf(ui: Drawing, key: string): Promise<string[]> {
+  return ((await keyed(ui, key))?.children ?? []).map(shown)
 }
 
 describe('context-bar', () => {
@@ -217,9 +268,10 @@ describe('context-bar', () => {
       expect(legend).toContain('overhead 32.9k ▸')
       expect(legend).toContain('messages 29.5k')
       expect(legend).toContain('free 92.6k')
-      expect(await textOf(ui, 'breakdown')).toBe(
-        'overhead: tools 14.6k, mcp tools 9.8k, system 3.1k, skills 2k, mcp 1.2k, memory files 1.2k, agents 1k',
-      )
+      expect(await linesOf(ui, 'breakdown')).toEqual([
+        'overhead: tools 14.6k, mcp 11k, system 3.1k, skills 2k, memory files 1.2k,',
+        'agents 1k',
+      ])
 
       await toggle($)
       expect(await textOf(ui, 'legend')).toBeUndefined()
@@ -243,14 +295,13 @@ describe('context-bar', () => {
       const rows = await drillRows(ui)
       expect(plain(rows)).toEqual([
         'tools ▉ 14.6k',
-        'mcp tools ▸ ▉ 9.8k',
+        'mcp ▸ ▉ 11k',
         'system ▉ 3.1k',
         'skills ▸ ▉ 2k',
-        'mcp ▉ 1.2k',
         'memory files ▸ ▉ 1.2k',
         'agents ▸ ▉ 1k',
       ])
-      expect(rows.map(([, cells]) => cells)).toEqual([52, 35, 11, 7, 4, 4, 4])
+      expect(rows.map(([, cells]) => cells)).toEqual([52, 39, 11, 7, 4, 4])
       expect(Math.max(...rows.map(([text]) => text.length))).toBeLessThanOrEqual(76)
 
       await ui.press({ key: 'overhead' })
@@ -268,7 +319,7 @@ describe('context-bar', () => {
 
     await overhead($)
     expect(await textOf(ui, 'header')).toContain('62.4k used')
-    expect((await drillRows(ui)).length).toBe(7)
+    expect((await drillRows(ui)).length).toBe(6)
 
     await overhead($)
     expect(await keyed(ui, 'drill')).toBeUndefined()
@@ -320,11 +371,11 @@ describe('context-bar', () => {
       expect(Math.max(...skills.map(([text]) => text.length))).toBeLessThanOrEqual(76)
       expect(await textOf(ui, 'more')).toContain('+ 2 more 230')
 
-      await ui.press({ key: 'category:mcp tools' })
-      expect(plain(await rowsOf(ui, 'items'))).toEqual(['playwright ▉ 5.6k', 'github ▉ 4.2k'])
+      await ui.press({ key: 'category:mcp' })
+      expect(plain(await rowsOf(ui, 'items'))).toEqual(['playwright ▉ 5.6k', 'github ▉ 4.2k', 'instructions ▉ 1.2k'])
       expect(await keyed(ui, 'more')).toBeUndefined()
 
-      await ui.press({ key: 'category:mcp tools' })
+      await ui.press({ key: 'category:mcp' })
       expect(await keyed(ui, 'items')).toBeUndefined()
       await ui.press({ key: 'overhead' })
       await ui.unmount()
@@ -387,7 +438,7 @@ describe('context-bar', () => {
 
     expect(buttons.map(button => button.key)).toEqual([
       'overhead',
-      'category:mcp tools',
+      'category:mcp',
       'category:skills',
       'category:memory files',
       'category:agents',
@@ -402,7 +453,7 @@ describe('context-bar', () => {
 
     await overhead($, 'memory files')
 
-    expect((await drillRows(ui)).length).toBe(7)
+    expect((await drillRows(ui)).length).toBe(6)
     expect(plain(await rowsOf(ui, 'items'))).toEqual(['CLAUDE.md (user) ▉ 700', 'CLAUDE.md (project) ▉ 500'])
   })
 
@@ -415,7 +466,7 @@ describe('context-bar', () => {
 
     const { text } = await overhead($, 'system')
 
-    expect(text).toContain('mcp tools, skills, memory files or agents')
+    expect(text).toContain('mcp, skills, memory files or agents')
     expect(await keyed(ui, 'items')).toBeUndefined()
   })
 
@@ -526,6 +577,87 @@ describe('context-bar', () => {
     expect(await textOf(ui, 'legend')).toContain('messages 77k')
   })
 
+  test('counts the overhead exactly, as /context does, not from the local estimates', async ($, on) => {
+    const asked = engine(on, () => BREAKDOWN)
+    mock.store(on)
+    await start($)
+    await toggle($)
+    const ui = await $.ui.mount({ ...band(), surface: 'terminal' })
+
+    // The estimates alone would read overhead 54.2k and messages 8.2k.
+    const legend = await textOf(ui, 'legend')
+    expect(legend).toContain('overhead 32.9k ▸')
+    expect(legend).toContain('messages 29.5k')
+    expect(await textOf(ui, 'header')).toContain('62.4k used')
+    expect(asked.full).toBe(1)
+  })
+
+  test('counts again only once the overhead changes, as when a tool loads', async ($, on) => {
+    let current = BREAKDOWN
+    const asked = engine(on, () => current)
+    mock.store(on)
+    await start($)
+    await toggle($)
+    const ui = await $.ui.mount({ ...band(), surface: 'terminal' })
+
+    current = LATER
+    await measure($, LATER)
+    expect(asked.full).toBe(1)
+    expect(await textOf(ui, 'legend')).toContain('messages 77k')
+
+    current = LOADED
+    await measure($, LOADED)
+    expect(asked.full).toBe(2)
+    expect(await textOf(ui, 'legend')).toContain('overhead 35.9k ▸')
+    expect(await textOf(ui, 'legend')).toContain('messages 74k')
+  })
+
+  test('leaves small drift in the estimates to the standing count', async ($, on) => {
+    let current = BREAKDOWN
+    const asked = engine(on, () => current)
+    mock.store(on)
+    await start($)
+    await toggle($)
+    const ui = await $.ui.mount({ ...band(), surface: 'terminal' })
+
+    current = changed({ Skills: 2_100, Messages: 76_900 }, 109_900, 55)
+    await measure($, current)
+
+    expect(asked.full).toBe(1)
+    expect(await textOf(ui, 'legend')).toContain('overhead 32.9k ▸')
+    expect(await textOf(ui, 'header')).toContain('110k used')
+  })
+
+  test('keeps the estimates when the exact count fails, and does not ask again every turn', async ($, on) => {
+    let current = BREAKDOWN
+    const asked = engine(on, () => current, true)
+    mock.store(on)
+    await start($)
+    await toggle($)
+    const ui = await $.ui.mount({ ...band(), surface: 'terminal' })
+
+    expect(await textOf(ui, 'legend')).toContain('overhead 54.2k ▸')
+
+    current = LATER
+    await measure($, LATER)
+    expect(asked.full).toBe(1)
+    expect(await textOf(ui, 'header')).toContain('110k used')
+  })
+
+  test('breaks the breakdown only between its entries', async ($, on) => {
+    engine(on, () => BREAKDOWN)
+    mock.store(on)
+    await start($)
+    await toggle($)
+
+    const ui = await $.ui.mount({ ...band(40), surface: 'terminal' })
+    expect(await linesOf(ui, 'breakdown')).toEqual([
+      'overhead: tools 14.6k, mcp 11k,',
+      'system 3.1k, skills 2k,',
+      'memory files 1.2k, agents 1k',
+    ])
+  })
+
   test('colors the percentage by how close compaction is', async ($, on) => {
     let current = BREAKDOWN
     engine(on, () => current)
@@ -576,9 +708,8 @@ describe('context-bar', () => {
   for (const reason of ['clear', 'resume'] as const) {
     test(`measures the new conversation after a /${reason}`, async ($, on) => {
       let current = BREAKDOWN
-      engine(on, () => current)
+      const { clock } = engine(on, () => current)
       mock.store(on)
-      const clock = mock.clock(on)
       on('session.end', ($, e) => ({ sessionId: e.sessionId }))
       await start($)
       await toggle($)
@@ -595,9 +726,8 @@ describe('context-bar', () => {
 
   test('drops after a compaction', async ($, on) => {
     let current = BREAKDOWN
-    engine(on, () => current)
+    const { clock } = engine(on, () => current)
     mock.store(on)
-    const clock = mock.clock(on)
     on('session.compact', () => ({ messages: [{ role: 'user', text: 'Summary: we built a context bar.', toolUses: [] }] }))
     await start($)
     await toggle($)

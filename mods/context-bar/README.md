@@ -10,15 +10,15 @@ Type `/context-bar` and a card appears in the band above the prompt:
 - a meter, drawn in cells, that fills toward the compaction point: the overhead in gray, the conversation (messages) in orange, and the room left as the dark track;
 - a legend, and a line breaking the overhead down, largest first.
 
-Press `overhead ▸` in the legend, or run `/context-bar overhead`, to open the overhead as ranked bars, one row per category. A category that lists what it is made of (mcp tools by server, skills, agents, memory files) shows `▸`: press it, or run `/context-bar overhead skills`, to see its biggest items, then `+ N more` for every item. `show fewer` folds the list back.
+Press `overhead ▸` in the legend, or run `/context-bar overhead`, to open the overhead as ranked bars, one row per category. A category that lists what it is made of (mcp, skills, agents, memory files) shows `▸`: press it, or run `/context-bar overhead skills`, to see its biggest items, then `+ N more` for every item. `show fewer` folds the list back.
 
-The figures come from `$.session.usage({ breakdown: 'summary' })`, the same breakdown `/context` shows, counted from Claude Code's local estimates. The call sends no token-count requests, so refreshing costs nothing.
+The figures match `/context`. After each turn the card reads Claude Code's free estimate of the window, `$.session.usage({ breakdown: 'summary' })`. That estimate takes its total from the last response, exactly, but its categories are local estimates, which in a long session ran to twice what `/context` counts. So the card counts the overhead the way `/context` does, with `breakdown: 'full'`. It counts when it first shows, and again only when the estimates show the overhead has changed, as when a tool loads. Between counts, the conversation is the total less the counted overhead.
 
 | Hook | What it does |
 |------|--------------|
 | `session.start` | Registers `/context-bar`, and shows the card again if you left it on. |
 | `command.run` with `{command: "context-bar"}` | Shows or hides the card, or opens the overhead and its categories. |
-| `session.measure` | Measures the window again after each turn. |
+| `session.measure` | Measures the window again after each turn, and counts the overhead again if it changed. |
 | `session.compact` and `session.end` | Measure again after a compaction, a `/clear` or a `/resume`. |
 | `ui.render` with `{component: "AbovePrompt"}` | Draws the card. |
 
@@ -30,8 +30,7 @@ Every request Claude Code sends carries more than your conversation, and the ove
 | --- | --- |
 | tools | The definitions of Claude Code's built-in tools: Bash, Read, Edit and the rest. |
 | system | Claude Code's own instructions: how to work, how to use its tools, and details about your environment. |
-| mcp tools | The definitions of MCP tools loaded into the context. With tool search, most load only when needed and cost nothing until then. |
-| mcp | Guidance that connected MCP servers add to the instructions about using their tools. |
+| mcp | What connected MCP servers cost: the instructions they add about using their tools, and the definitions of their tools loaded into the context. With tool search, most tools load only when needed and cost nothing until then. `/context` lists the two as MCP server instructions and MCP tools. |
 | skills | The list of skills Claude can use, a name and a description for each, so every plugin that brings skills adds to it. |
 | agents | The descriptions of the custom agents Claude can hand work to, most of them from plugins. They are listed whether or not one ever runs; Claude Code's built-in agents are not counted. |
 | memory files | CLAUDE.md files and auto-memory, loaded when the session starts. |
@@ -44,11 +43,11 @@ To trim the overhead, open it, see which skills and agents cost the most, and di
 
 After the first turn, which read two modules, 47% of the way to compaction:
 
-![Context Bar after one turn: 78.4k used, compaction at 167k, 47%](screenshots/context-bar-halfway.png)
+![Context Bar after one turn: 78.1k used, compaction at 167k, 47%](screenshots/context-bar-halfway.png)
 
-After reading three more, 81%. The badge turns red as compaction nears:
+After reading three more, 80%. The badge turns red as compaction nears:
 
-![Context Bar after two turns: 135k used, 81%](screenshots/context-bar-full.png)
+![Context Bar after two turns: 134k used, 80%](screenshots/context-bar-full.png)
 
 `/context-bar overhead`, or pressing `overhead ▸`, opens the overhead as ranked bars:
 
@@ -73,7 +72,9 @@ Pressing `skills ▸` lists the skills by what they cost, with the rest one pres
   - Half-cell slices mixed block glyphs with background colors. Terminals that draw glyphs from the font, such as Apple Terminal, draw them shorter than the row, so the bar looked uneven. Every cell is now the same `▉` glyph, whose last eighth leaves a deliberate gap between cells.
   - The colors still blended. The dataviz skill's palette validator failed the per-category palette on four of five checks, and only four documented theme colors pass even on their own. So the bar became a meter with emphasis: one accent for the conversation, gray for the rest, filling toward compaction rather than the end of the window, which also dropped the reserve band.
   - The overhead became something to open: ranked bars per category, then the items inside the categories the API lists, then every item.
-  - Tested with `claude plugin test` (67 tests) and by breaking the code on purpose to check the tests catch it. The screenshots come from driving a real Claude Code session; [`tools/screenshots`](../../tools/screenshots/) takes them again from `screenshots/scenario.json`.
+  - The overhead read from the free local estimates, which in a long session came to nearly twice what `/context` counted (60k against 32k). The card now counts the overhead as `/context` does, and only when it changes.
+  - MCP's two categories read alike on the card, so they became one `mcp` entry. The legend's swatches are now the bar's own seven-eighths cell. As full blocks, they ran into the gap between cells and sat out of line with the bar.
+  - Tested with `claude plugin test` (86 tests) and by breaking the code on purpose to check the tests catch it. The screenshots come from driving a real Claude Code session; [`tools/screenshots`](../../tools/screenshots/) takes them again from `screenshots/scenario.json`.
 
 ## Run it
 
@@ -104,11 +105,12 @@ claude --plugin-dir ./claude-extensions/mods/context-bar
 
 ## Notes / limitations
 
-- **The numbers are estimates.** They are Claude Code's local estimates, anchored on the last response; `/context` counts each category with the token-counting API and can differ slightly.
+- **The overhead is counted only when it changes.** Each count sends one token-count request per tool and memory file, as `/context` does, so the card counts when it first shows and whenever the overhead changes. A change under 2% of a category, or under 200 tokens, waits for the next count.
+- **If a count fails, the card shows the estimates**, which can run well over `/context`'s figures, until the overhead changes again.
 - **The card updates after each turn**, a compaction, a `/clear` and a `/resume`, not during a turn.
 - **The meter fills toward compaction**, so its percentage is of the auto-compact point, not the whole window. With auto-compaction off, it fills toward the end of the window.
-- **Only some categories open to items.** The mod API lists the parts of mcp tools, skills, agents and memory files, but not of tools, system or mcp.
-- **The short labels match `/context`'s category names.** If an update renames a category, it shows under its own name, lowercased.
+- **Only some categories open to items.** The mod API lists the parts of mcp (its instructions, and its loaded tools by server), skills, agents and memory files, but not of tools or system.
+- **The short labels follow `/context`'s category names**, with MCP server instructions and MCP tools together as `mcp`. If an update renames a category, it shows under its own name, lowercased.
 - **Pressing a button** needs the fullscreen terminal for a click; `/context-bar overhead [category]` works anywhere.
 - **Long lists scroll inside the band**, which takes at most half the terminal's height.
 - **In 16-color terminal themes**, the overhead and the free space share a gray.

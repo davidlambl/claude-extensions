@@ -1,18 +1,23 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
+import type { ContextBarCount, ContextBarSegment } from '../types'
 import {
   CELL,
   FILL,
   badgeColor,
   barRuns,
+  breakdownLines,
   formatTokens,
+  hasShifted,
   meter,
   orList,
+  overheadOf,
   packRows,
   rankRows,
   toUsage,
   topItems,
+  withCount,
 } from './layout'
 
 const isVisible = atom({ plugin: 'context-bar', key: 'isVisible' } as const, false)
@@ -20,6 +25,14 @@ const isDrilled = atom({ plugin: 'context-bar', key: 'isDrilled' } as const, fal
 const openCategory = atom({ plugin: 'context-bar', key: 'openCategory' } as const, null)
 const expandedCategory = atom({ plugin: 'context-bar', key: 'expandedCategory' } as const, null)
 const usage = atom({ plugin: 'context-bar', key: 'usage' } as const, null)
+const counted = atom({ plugin: 'context-bar', key: 'counted' } as const, null)
+
+/**
+ * Whether an exact count is scheduled or running, so a second one waits for
+ * the next turn. Not drawn from, so a module variable will do: a reload clears
+ * it, and the most that costs is one count more.
+ */
+let isCounting = false
 
 /** Long enough for the engine to install a compaction or a /clear before we measure. */
 const SETTLE_MS = 250
@@ -32,6 +45,13 @@ const TITLE = '◆ context'
 /** Cells between legend entries. */
 const GAP = 3
 
+/**
+ * A legend entry's swatch: one of the bar's own cells, so it stands exactly as
+ * wide as a cell of the bar, with the same gap after it. A full block, or a
+ * square from the font, runs into that gap and sits out of line with the bar.
+ */
+const SWATCH = CELL
+
 /** How far the ranked bars sit in from the card's edge; a category's items sit two further. */
 const INDENT = 2
 
@@ -41,10 +61,54 @@ const MAX_ITEMS = 8
 /** The most an item's name may take before it is cut. */
 const ITEM_LABEL = 28
 
-/** Measures the window as /context breaks it down, from local estimates (no API calls). */
+/**
+ * Measures the window as /context breaks it down. The `summary` breakdown is
+ * free and takes its total from the last response's usage, exactly, but its
+ * categories are local estimates that can run to twice what /context counts.
+ * So the overhead comes from the last exact count, taken again in the
+ * background whenever the estimates show the overhead has changed.
+ */
 async function refresh($: EngineInterface) {
   const { context } = await $.session.usage({ breakdown: 'summary' })
-  await update($, usage, () => (context.breakdown ? toUsage(context.breakdown) : null))
+  if (context.breakdown === undefined) {
+    await update($, usage, () => null)
+    return
+  }
+
+  const estimate = toUsage(context.breakdown)
+  const count = await read($, counted)
+  await update($, usage, () => withCount(estimate, count))
+  if (!isCounting && (count === null || hasShifted(overheadOf(estimate), count.basis))) {
+    isCounting = true
+    $.clock.after(0, () => void countExactly($))
+  }
+}
+
+/**
+ * Counts the overhead with the token-count API, as /context does: one request
+ * per tool and memory file, which is why it runs only when the overhead
+ * changed. Should the count fail, the estimates stand until they shift again.
+ */
+async function countExactly($: EngineInterface) {
+  try {
+    const { context } = await $.session.usage({ breakdown: 'summary' })
+    if (context.breakdown === undefined) return
+    const estimate = toUsage(context.breakdown)
+
+    let segments: ContextBarSegment[] | null = null
+    try {
+      const exact = (await $.session.usage({ breakdown: 'full' })).context.breakdown
+      if (exact !== undefined) segments = overheadOf(toUsage(exact))
+    } catch {
+      // Keeps the estimates; the basis below holds the next attempt off until they move.
+    }
+
+    const count: ContextBarCount = { basis: overheadOf(estimate).map(({ name, tokens }) => ({ name, tokens })), segments }
+    await update($, counted, () => count)
+    await update($, usage, () => withCount(estimate, count))
+  } finally {
+    isCounting = false
+  }
 }
 
 /** Shows or hides the card, and remembers which for the next session. */
@@ -182,7 +246,7 @@ export const register: Register = on => {
             inner - INDENT - 2,
             ITEM_LABEL,
           )
-    const breakdown = parts.map(part => `${part.label} ${formatTokens(part.tokens)}`).join(', ')
+    const breakdown = breakdownLines(parts, inner)
 
     return (
       <Box flexDirection="column" borderStyle="round" borderColor="subtle" paddingX={1}>
@@ -215,7 +279,7 @@ export const register: Register = on => {
                   return (
                     <Box>
                       <Text>
-                        <Text color={fill.color}>█</Text>{' '}
+                        <Text color={fill.color}>{SWATCH}</Text>{' '}
                       </Text>
                       <Button key="overhead" plain label={opener} onPress={() => update($, isDrilled, shown => !shown)} />
                     </Box>
@@ -224,7 +288,7 @@ export const register: Register = on => {
 
                 return (
                   <Text>
-                    <Text color={fill.color}>█</Text> {fill.label} <Text bold>{fill.amount}</Text>
+                    <Text color={fill.color}>{SWATCH}</Text> {fill.label} <Text bold>{fill.amount}</Text>
                   </Text>
                 )
               })}
@@ -293,9 +357,11 @@ export const register: Register = on => {
             })}
           </Box>
         )}
-        {!drilled && breakdown !== '' && (
-          <Box key="breakdown">
-            <Text dimColor>overhead: {breakdown}</Text>
+        {!drilled && breakdown.length > 0 && (
+          <Box key="breakdown" flexDirection="column">
+            {breakdown.map(line => (
+              <Text dimColor>{line}</Text>
+            ))}
           </Box>
         )}
       </Box>

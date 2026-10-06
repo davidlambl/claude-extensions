@@ -5,11 +5,12 @@ Claude Code mods, skills and plugins. The repo is a plugin marketplace: list eve
 ## Mods
 
 - Load the `plugin-authoring` skill before writing or debugging a mod. It names this build's API declarations (`claude-code.d.ts`); they are the reference, so grep them rather than guess.
-- A new mod is written in the session's mods folder the skill names (it hot-reloads there), then copied to `mods/<name>/` once it works. An installed mod is read from this repo in place, so edit it here and run `/reload-plugins`.
+- A new mod is written in the session's mods folder the skill names (it hot-reloads there), then copied to `mods/<name>/` once it works. Then remove the session copy: while both load, the session copy draws in place of the installed one, and edits here seem to do nothing. An installed mod is read from this repo in place, so edit it here and run `/reload-plugins`.
 - Each mod has a README.md following the template of github.com/anthropics/claude-code-playground (`_template/README.md`: what it shows, demo, how it was built, run it, notes, dependencies, third-party notices) and a `screenshots/` folder of `<name>-<state>.png`. Screenshots come from a real Claude Code session: write `screenshots/scenario.json` and run `node tools/screenshots/shoot.mjs` on it (see its README), never stage or hand-edit an image.
 - Done means `claude plugin validate mods/<name>` and `claude plugin test mods/<name>` pass, and `tsc -p mods/<name>` is clean once the engine has loaded the mod (it lays `.claude-plugin/types/`, gitignored).
 - Never mix background fills and block glyphs in one row: many terminals draw glyphs from the font, short of the row's height and with seams, while a background fills its whole cell, so the two stand at different heights. Draw a bar all one way: backgrounds on spaces for a seamless fill, or every cell as `▉` (seven-eighths block) for even cells with a deliberate gap between them.
 - Check a palette with the dataviz skill's validator before shipping it; the documented theme keys hold only about four colors that stay distinct, so past that use emphasis (one accent, the rest gray) instead of more hues.
+- A `summary` usage breakdown takes its total from the last response, but its categories are local estimates that can run to twice what `/context` counts. Where the categories matter, count with `full`, which sends one token-count request per tool and memory file, and only when they change.
 - Paint only with documented theme keys: type colors as `ThemeKey` from `'claude-code'`, so `tsc` refuses any other. Keys like `*_FOR_SUBAGENTS_ONLY` or `rate_limit_empty` resolve today but are internals an update can change without notice.
 
 Rules this build enforces that are easy to trip on:

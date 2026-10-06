@@ -1,6 +1,6 @@
 import type { SessionContextBreakdown, ThemeKey } from 'claude-code'
 
-import type { ContextBarItem, ContextBarUsage } from '../types'
+import type { ContextBarCount, ContextBarItem, ContextBarSegment, ContextBarUsage } from '../types'
 
 /**
  * The meter's fills, from the theme keys the mod API documents: the
@@ -15,11 +15,15 @@ export const FILL = { overhead: 'inactive', messages: 'claude', free: 'subtle' }
 /** The /context category that is the conversation; every other one is overhead. */
 const MESSAGES = 'Messages'
 
-/** Shorter names for /context's categories; one it does not know keeps its own, lowercased. */
+/**
+ * Shorter names for /context's categories; one it does not know keeps its own,
+ * lowercased. Both of MCP's categories go under one name, so the card shows one
+ * entry for what MCP servers cost, not two that read alike.
+ */
 const LABELS = new Map([
   ['System prompt', 'system'],
   ['System tools', 'tools'],
-  ['MCP tools', 'mcp tools'],
+  ['MCP tools', 'mcp'],
   ['MCP server instructions', 'mcp'],
   ['Custom agents', 'agents'],
   ['Memory files', 'memory files'],
@@ -34,7 +38,7 @@ export function toUsage(breakdown: SessionContextBreakdown): ContextBarUsage {
   return {
     segments: breakdown.categories.flatMap(({ name, tokens, kind }) => {
       if (kind === 'deferred') return []
-      const items = itemsOf(name, breakdown)
+      const items = itemsOf({ name, tokens }, breakdown)
 
       return [{ name, tokens, kind, ...(items === undefined ? {} : { items }) }]
     }),
@@ -46,10 +50,13 @@ export function toUsage(breakdown: SessionContextBreakdown): ContextBarUsage {
 
 /**
  * What a /context category is made of, for those the breakdown lists: the MCP
- * tools in the window by server, the agents, the memory files, the skills.
+ * server instructions as one item and the MCP tools in the window by server
+ * (the two make up `mcp`), the agents, the memory files, the skills.
  */
-function itemsOf(category: string, breakdown: SessionContextBreakdown): ContextBarItem[] | undefined {
-  switch (category) {
+function itemsOf(category: ContextBarItem, breakdown: SessionContextBreakdown): ContextBarItem[] | undefined {
+  switch (category.name) {
+    case 'MCP server instructions':
+      return [{ name: 'instructions', tokens: category.tokens }]
     case 'MCP tools': {
       const servers = new Map<string, number>()
       for (const tool of breakdown.mcpTools) {
@@ -90,14 +97,18 @@ export type Meter = {
 export function meter(usage: ContextBarUsage): Meter {
   const capacity = usage.compactsAt ?? usage.maxTokens
   const inUse = usage.segments.filter(segment => segment.kind === 'used')
-  const parts = inUse
-    .filter(segment => segment.name !== MESSAGES)
-    .map(({ name, tokens, items }) => ({
-      label: LABELS.get(name) ?? name.toLowerCase(),
-      tokens,
-      ...(items === undefined ? {} : { items: [...items].sort(largestFirst) }),
-    }))
-    .sort(largestFirst)
+  const byLabel = new Map<string, OverheadPart>()
+  for (const { name, tokens, items } of inUse.filter(segment => segment.name !== MESSAGES)) {
+    const label = LABELS.get(name) ?? name.toLowerCase()
+    const part = byLabel.get(label)
+    const merged = [...(part?.items ?? []), ...(items ?? [])]
+    byLabel.set(label, {
+      label,
+      tokens: (part?.tokens ?? 0) + tokens,
+      ...(part?.items === undefined && items === undefined ? {} : { items: merged.sort(largestFirst) }),
+    })
+  }
+  const parts = [...byLabel.values()].sort(largestFirst)
 
   return {
     capacity,
@@ -111,6 +122,62 @@ export function meter(usage: ContextBarUsage): Meter {
 
 function largestFirst(a: { tokens: number }, b: { tokens: number }): number {
   return b.tokens - a.tokens
+}
+
+/** A breakdown's overhead: every category in use but the conversation. */
+export function overheadOf(usage: ContextBarUsage): ContextBarSegment[] {
+  return usage.segments.filter(segment => segment.kind === 'used' && segment.name !== MESSAGES)
+}
+
+/**
+ * Whether the overhead's estimates have moved since it was counted: a category
+ * came or went, or one moved by more than 2% of itself (and at least 200
+ * tokens), as when a tool loads; smaller drift leaves the count standing.
+ */
+export function hasShifted(estimates: readonly ContextBarItem[], basis: readonly ContextBarItem[]): boolean {
+  if (estimates.length !== basis.length) return true
+  const before = new Map(basis.map(item => [item.name, item.tokens]))
+
+  return estimates.some(({ name, tokens }) => {
+    const was = before.get(name)
+
+    return was === undefined || Math.abs(tokens - was) > Math.max(200, was * 0.02)
+  })
+}
+
+/**
+ * The window with the overhead as counted: the total and the room left stay
+ * the estimate's (it takes the total from the last response's usage, exactly),
+ * and the conversation is whatever of the total the counted overhead leaves.
+ */
+export function withCount(estimate: ContextBarUsage, count: ContextBarCount | null): ContextBarUsage {
+  if (count === null || count.segments === null) return estimate
+  const overhead = count.segments.reduce((sum, segment) => sum + segment.tokens, 0)
+
+  return {
+    ...estimate,
+    segments: [
+      ...count.segments,
+      { name: MESSAGES, tokens: Math.max(0, estimate.totalTokens - overhead), kind: 'used' },
+      ...estimate.segments.filter(segment => segment.kind !== 'used'),
+    ],
+  }
+}
+
+/**
+ * The overhead's one-line breakdown (`overhead: tools 14.6k, mcp 11k, …`)
+ * broken into lines `width` cells wide, only ever between entries.
+ */
+export function breakdownLines(parts: readonly { label: string; tokens: number }[], width: number): string[] {
+  const entries = parts.map(
+    (part, i) => `${i === 0 ? 'overhead: ' : ''}${part.label} ${formatTokens(part.tokens)}${i < parts.length - 1 ? ',' : ''}`,
+  )
+
+  return packRows(
+    entries.map(entry => entry.length),
+    width,
+    1,
+  ).map(row => row.map(i => entries[i]).join(' '))
 }
 
 /** The first `max` items, and how many more there are and what they come to, if any. */
