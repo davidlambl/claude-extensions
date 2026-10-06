@@ -10,6 +10,8 @@ Type `/context-bar` and a card appears in the band above the prompt:
 - a meter, drawn in cells, that fills toward the compaction point: the overhead in gray, the conversation (messages) in orange, and the room left as the dark track;
 - a legend, and a line breaking the overhead down, largest first.
 
+Claude Code for VS Code doesn't draw a mod's band or panes yet, so there `/context-bar` answers with the card's figures as text instead. That answer is a snapshot, counted exactly, and `/context-bar overhead <category>` adds that category's biggest items. The card also has a pane ready for surfaces without the band, which the mod API says VS Code and the mobile app will be. Once one draws mod panes, `/context-bar` opens the card in a pane there, and closing the pane turns the card off.
+
 Press `overhead ▸` in the legend, or run `/context-bar overhead`, to open the overhead as ranked bars, one row per category. A category that lists what it is made of (mcp, skills, agents, memory files) shows `▸`: press it, or run `/context-bar overhead skills`, to see its biggest items, then `+ N more` for every item. `show fewer` folds the list back.
 
 The figures match `/context`. After each turn the card reads Claude Code's free estimate of the window, `$.session.usage({ breakdown: 'summary' })`. That estimate takes its total from the last response, exactly, but its categories are local estimates, which in a long session ran to twice what `/context` counts. So the card counts the overhead the way `/context` does, with `breakdown: 'full'`. It counts when it first shows, and again only when the estimates show the overhead has changed, as when a tool loads. Between counts, the conversation is the total less the counted overhead.
@@ -17,10 +19,12 @@ The figures match `/context`. After each turn the card reads Claude Code's free 
 | Hook | What it does |
 |------|--------------|
 | `session.start` | Registers `/context-bar`, and shows the card again if you left it on. |
-| `command.run` with `{command: "context-bar"}` | Shows or hides the card, or opens the overhead and its categories. |
+| `session.attach` | Shows the card again, in its pane, when a surface without the band connects. |
+| `command.run` with `{command: "context-bar"}` | Shows or hides the card, or opens the overhead and its categories. Where nothing draws, it answers with the figures. |
 | `session.measure` | Measures the window again after each turn, and counts the overhead again if it changed. |
 | `session.compact` and `session.end` | Measure again after a compaction, a `/clear` or a `/resume`. |
-| `ui.render` with `{component: "AbovePrompt"}` | Draws the card. |
+| `ui.render` with `{component: "AbovePrompt"}` | Draws the card in the band, in the terminal and the desktop app. |
+| `ui.render` with `{component: "Pane"}` and `ui.close` | Draws the card in its pane where a session has no band, and turns it off when you close the pane. |
 
 ### What the overhead is
 
@@ -74,13 +78,14 @@ Pressing `skills ▸` lists the skills by what they cost, with the rest one pres
   - The overhead became something to open: ranked bars per category, then the items inside the categories the API lists, then every item.
   - The overhead read from the free local estimates, which in a long session came to nearly twice what `/context` counted (60k against 32k). The card now counts the overhead as `/context` does, and only when it changes.
   - MCP's two categories read alike on the card, so they became one `mcp` entry. The legend's swatches are now the bar's own seven-eighths cell. As full blocks, they ran into the gap between cells and sat out of line with the bar.
-  - Tested with `claude plugin test` (86 tests) and by breaking the code on purpose to check the tests catch it. The screenshots come from driving a real Claude Code session; [`tools/screenshots`](../../tools/screenshots/) takes them again from `screenshots/scenario.json`.
+  - In VS Code the card had nowhere to draw, because the extension doesn't draw mod UI yet. `/context-bar` answers with an exact snapshot there, and the card has a pane ready for when VS Code draws one.
+  - Tested with `claude plugin test` (95 tests) and by breaking the code on purpose to check the tests catch it. The screenshots come from driving a real Claude Code session; [`tools/screenshots`](../../tools/screenshots/) takes them again from `screenshots/scenario.json`.
 
 ## Run it
 
 **Requirements:**
 
-- Claude Code 2.1.287 or later, in the terminal or the desktop app. Built and tested on 2.1.290 and 2.1.291.
+- Claude Code 2.1.287 or later, in the terminal or the desktop app, where the card sits above the prompt. In VS Code, `/context-bar` answers with the figures as text until the extension draws mod panes. Built and tested on 2.1.290 and 2.1.291.
 
 No environment variables or configuration.
 
@@ -115,6 +120,9 @@ claude --plugin-dir ./claude-extensions/mods/context-bar
 - **Long lists scroll inside the band**, which takes at most half the terminal's height.
 - **In 16-color terminal themes**, the overhead and the free space share a gray.
 - **One band per session.** Another mod that draws above the prompt competes for the same band.
+- **The band and the pane each remember their own choice**, so turning the card off in VS Code leaves it on in the terminal.
+- **A session that a terminal or the desktop app shows draws the band.** A phone attached to it alongside sees no card.
+- **Nothing is drawn in VS Code today, in a `-p` run or under the Agent SDK.** The card never measures there on its own, whatever you left on. `/context-bar` answers with a snapshot instead.
 
 ## Dependencies
 

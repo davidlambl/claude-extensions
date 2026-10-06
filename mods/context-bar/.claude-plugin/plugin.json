@@ -1,6 +1,6 @@
 {
   "name": "context-bar",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Your context window as a meter above the prompt: the conversation, the overhead every request carries, and the room left before compaction, with a drill-down into the overhead. Toggle it with /context-bar.",
   "author": { "name": "David Lambl" },
   "types": "./types/index.d.ts"

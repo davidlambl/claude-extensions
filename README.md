@@ -16,7 +16,7 @@ From a Claude Code prompt in a terminal:
 /plugin install context-bar --marketplace davidlambl/claude-extensions
 ```
 
-Answer `y` to add the marketplace, then choose a scope. Mods need Claude Code 2.1.287 or later, in the terminal or the desktop app.
+Answer `y` to add the marketplace, then choose a scope. Mods need Claude Code 2.1.287 or later. context-bar draws above the prompt in the terminal and the desktop app. In VS Code, which doesn't draw mod UI yet, `/context-bar` answers with the figures as text.
 
 To work on the extensions, install from a clone instead. It is read in place, so your edits reach a session on `/reload-plugins`:
 
