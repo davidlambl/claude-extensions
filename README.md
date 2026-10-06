@@ -33,7 +33,7 @@ Each mod is a folder under `mods/`:
 ```
 mods/<name>/
   README.md                    what it shows, a demo, how it was built, how to run it
-  screenshots/                 the demo's images, <name>-<state>.png
+  screenshots/                 the demo's images, <name>-<state>.png, and the scenario that takes them
   .claude-plugin/plugin.json   manifest: name, version, description, "types"
   hooks/hooks.json             { "modules": ["./register.tsx"] }
   hooks/register.tsx           the hooks module: export const register: Register
@@ -48,3 +48,10 @@ claude plugin test mods/<name>       # the mod's tests, run against the engine i
 ```
 
 List each new extension in `.claude-plugin/marketplace.json`, then `claude plugin validate .` checks the whole marketplace.
+
+A mod's screenshots come from a real Claude Code session, driven by the scenario next to them; [`tools/screenshots`](tools/screenshots/) takes them again:
+
+```sh
+npm install --prefix tools/screenshots
+node tools/screenshots/shoot.mjs mods/<name>/screenshots/scenario.json
+```

@@ -1,0 +1,43 @@
+{
+  "name": "context-bar",
+  "project": "tidewatch",
+  "model": "claude-haiku-4-5-20251001",
+  "cols": 120,
+  "rows": 52,
+  "shots": {
+    "halfway": "Context Bar: after the first turn",
+    "full": "Context Bar: after the second turn",
+    "overhead": "Context Bar: the overhead opened",
+    "skills": "Context Bar: skills opened to their biggest items"
+  },
+  "steps": [
+    { "wait": 4, "max": 40 },
+    { "if_present": "Yes, I trust this folder", "then": [{ "key": "down" }, { "key": "enter" }, { "wait": 5, "max": 40 }] },
+    { "wait": 6, "min": 8, "max": 30 },
+    { "if_missing": "◆ context", "then": [{ "type": "/context-bar" }, { "wait": 1, "max": 5 }, { "key": "enter" }, { "wait": 3, "max": 20 }] },
+    { "type": "Read tides.py and charts.py, then tell me in one sentence what each module does." },
+    { "wait": 1, "max": 5 },
+    { "key": "enter" },
+    { "wait": 8, "min": 12, "max": 180 },
+    { "mark": "halfway" },
+    { "type": "Now read buoys.py, alerts.py and harbor.py in full and name the dataclass each one defines." },
+    { "wait": 1, "max": 5 },
+    { "key": "enter" },
+    { "wait": 8, "min": 12, "max": 180 },
+    { "mark": "full" },
+    { "type": "/context-bar overhead" },
+    { "wait": 1, "max": 5 },
+    { "key": "enter" },
+    { "wait": 3, "max": 20 },
+    { "mark": "overhead" },
+    { "type": "/context-bar overhead skills" },
+    { "wait": 1, "max": 5 },
+    { "key": "enter" },
+    { "wait": 3, "max": 20 },
+    { "mark": "skills" },
+    { "type": "/exit" },
+    { "wait": 1, "max": 5 },
+    { "key": "enter" },
+    { "wait": 2, "max": 10 }
+  ]
+}

@@ -44,7 +44,7 @@ To trim the overhead, open it, see which skills and agents cost the most, and di
 
 After the first turn, which read two modules, 47% of the way to compaction:
 
-![Context Bar after one turn: 78.3k used, compaction at 167k, 47%](screenshots/context-bar-halfway.png)
+![Context Bar after one turn: 78.4k used, compaction at 167k, 47%](screenshots/context-bar-halfway.png)
 
 After reading three more, 81%. The badge turns red as compaction nears:
 
@@ -73,7 +73,7 @@ Pressing `skills ▸` lists the skills by what they cost, with the rest one pres
   - Half-cell slices mixed block glyphs with background colors. Terminals that draw glyphs from the font, such as Apple Terminal, draw them shorter than the row, so the bar looked uneven. Every cell is now the same `▉` glyph, whose last eighth leaves a deliberate gap between cells.
   - The colors still blended. The dataviz skill's palette validator failed the per-category palette on four of five checks, and only four documented theme colors pass even on their own. So the bar became a meter with emphasis: one accent for the conversation, gray for the rest, filling toward compaction rather than the end of the window, which also dropped the reserve band.
   - The overhead became something to open: ranked bars per category, then the items inside the categories the API lists, then every item.
-  - Tested with `claude plugin test` (67 tests) and by breaking the code on purpose to check the tests catch it. The screenshots came from driving a real Claude Code session in a pseudo-terminal and rendering its screen with xterm.js.
+  - Tested with `claude plugin test` (67 tests) and by breaking the code on purpose to check the tests catch it. The screenshots come from driving a real Claude Code session; [`tools/screenshots`](../../tools/screenshots/) takes them again from `screenshots/scenario.json`.
 
 ## Run it
 

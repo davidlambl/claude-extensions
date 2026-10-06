@@ -1,0 +1,12 @@
+{
+  "name": "claude-extensions-screenshots",
+  "private": true,
+  "description": "Takes a mod's screenshots by running a real Claude Code session",
+  "type": "module",
+  "scripts": {
+    "shoot": "node shoot.mjs"
+  },
+  "dependencies": {
+    "@xterm/headless": "^6.0.0"
+  }
+}
