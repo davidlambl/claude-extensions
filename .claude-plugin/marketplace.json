@@ -1,0 +1,12 @@
+{
+  "name": "lambl-extensions",
+  "owner": { "name": "David Lambl" },
+  "metadata": { "description": "David Lambl's Claude Code mods, skills and plugins." },
+  "plugins": [
+    {
+      "name": "context-bar",
+      "source": "./mods/context-bar",
+      "description": "Your context window as a meter above the prompt: the conversation, the overhead every request carries, and the room left before compaction, with a drill-down into the overhead. Toggle it with /context-bar."
+    }
+  ]
+}

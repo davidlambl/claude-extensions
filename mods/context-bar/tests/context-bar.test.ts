@@ -1,0 +1,628 @@
+import { describe, expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
+import type { On, RenderElement, SessionContextBreakdown, SessionUsage } from 'claude-code'
+
+/**
+ * /context's breakdown as the engine lists it (its names, colors and order,
+ * the buffer before the free space): 62.4k of a 200k window, compaction at 155k.
+ * Overhead is 32.9k of it, the conversation 29.5k.
+ */
+const BREAKDOWN: SessionContextBreakdown = {
+  categories: [
+    { name: 'System prompt', tokens: 3_100, color: 'promptBorder', isDeferred: false, kind: 'used' },
+    { name: 'System tools', tokens: 14_600, color: 'inactive', isDeferred: false, kind: 'used' },
+    { name: 'MCP tools', tokens: 9_800, color: 'cyan_FOR_SUBAGENTS_ONLY', isDeferred: false, kind: 'used' },
+    { name: 'MCP server instructions', tokens: 1_200, color: 'green_FOR_SUBAGENTS_ONLY', isDeferred: false, kind: 'used' },
+    { name: 'MCP tools (deferred)', tokens: 41_000, color: 'inactive', isDeferred: true, kind: 'deferred' },
+    { name: 'Custom agents', tokens: 1_000, color: 'permission', isDeferred: false, kind: 'used' },
+    { name: 'Memory files', tokens: 1_200, color: 'claude', isDeferred: false, kind: 'used' },
+    { name: 'Skills', tokens: 2_000, color: 'warning', isDeferred: false, kind: 'used' },
+    { name: 'Messages', tokens: 29_500, color: 'purple_FOR_SUBAGENTS_ONLY', isDeferred: false, kind: 'used' },
+    { name: 'Autocompact buffer', tokens: 45_000, color: 'inactive', isDeferred: false, kind: 'buffer' },
+    { name: 'Free space', tokens: 92_600, color: 'promptBorder', isDeferred: false, kind: 'free' },
+  ],
+  totalTokens: 62_400,
+  maxTokens: 200_000,
+  rawMaxTokens: 200_000,
+  autocompactSource: 'auto',
+  percentage: 31,
+  gridRows: [],
+  model: 'claude-opus-5-5',
+  memoryFiles: [
+    { path: '/Users/me/.claude/CLAUDE.md', type: 'User', tokens: 700 },
+    { path: '/work/CLAUDE.md', type: 'Project', tokens: 500 },
+  ],
+  mcpTools: [
+    { name: 'mcp__playwright__browser_click', serverName: 'playwright', tokens: 3_000, isLoaded: true },
+    { name: 'mcp__github__create_issue', serverName: 'github', tokens: 4_200, isLoaded: true },
+    { name: 'mcp__playwright__browser_snapshot', serverName: 'playwright', tokens: 2_600, isLoaded: true },
+    { name: 'mcp__github__search', serverName: 'github', tokens: 41_000, isLoaded: false },
+  ],
+  agents: [
+    { agentType: 'plugin-dev:plugin-validator', source: 'plugin', tokens: 600 },
+    { agentType: 'code-reviewer', source: 'userSettings', tokens: 400 },
+  ],
+  skills: {
+    totalSkills: 10,
+    includedSkills: 10,
+    tokens: 2_000,
+    skillFrontmatter: [
+      { name: 'plugin-authoring', source: 'built-in', tokens: 400 },
+      { name: 'dataviz', source: 'built-in', tokens: 300 },
+      { name: 'superpowers:brainstorming', source: 'plugin', pluginName: 'superpowers', tokens: 250 },
+      { name: 'superpowers:test-driven-development', source: 'plugin', pluginName: 'superpowers', tokens: 200 },
+      { name: 'superpowers:writing-plans', source: 'plugin', pluginName: 'superpowers', tokens: 200 },
+      { name: 'frontend-design:frontend-design', source: 'plugin', pluginName: 'frontend-design', tokens: 150 },
+      { name: 'skill-creator', source: 'userSettings', tokens: 150 },
+      { name: 'code-review', source: 'built-in', tokens: 120 },
+      { name: 'simplify', source: 'built-in', tokens: 120 },
+      { name: 'run', source: 'built-in', tokens: 110 },
+    ],
+  },
+  autoCompactThreshold: 155_000,
+  isAutoCompactEnabled: true,
+  apiUsage: null,
+}
+
+/**
+ * BREAKDOWN with some rows' tokens changed, and the totals they come to; a row
+ * changed to no tokens is left out, as the engine lists only rows that hold some.
+ */
+function changed(rows: Record<string, number>, totalTokens: number, percentage: number): SessionContextBreakdown {
+  return {
+    ...BREAKDOWN,
+    categories: BREAKDOWN.categories
+      .map(row => ({ ...row, tokens: rows[row.name] ?? row.tokens }))
+      .filter(row => row.tokens > 0),
+    totalTokens,
+    percentage,
+  }
+}
+
+const LATER = changed({ Messages: 77_000, 'Free space': 45_100 }, 109_900, 55)
+const NEAR = changed({ Messages: 107_100, 'Free space': 15_000 }, 140_000, 70)
+const COMPACTED = changed({ Messages: 3_100, 'Free space': 119_000 }, 36_000, 18)
+const CLEARED = changed({ Messages: 0, 'Free space': 122_100 }, 32_900, 16)
+
+const SURFACES = ['terminal', 'desktop'] as const
+
+function band(bodyColumns = 80, hasSurvey = false) {
+  return {
+    plugin: 'context-bar',
+    component: 'AbovePrompt',
+    props: { hasSurvey, isWorking: false, maxRows: 12, bodyColumns, scroll: { offset: 0, bodyRows: 11 }, view: {} },
+    viewport: { columns: bodyColumns + 5, rows: 40 },
+  } as const
+}
+
+/**
+ * Stands in for the engine beneath the plugin: the session it starts, the
+ * commands it lists, an empty band, and the usage op, which itemizes the
+ * window as `current()` has it only when a breakdown is asked for.
+ */
+function engine(on: On, current: () => SessionContextBreakdown) {
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  on('session.usage', ($, e) => ({ value: usage(current(), e.breakdown !== undefined) }))
+  on('session.measure', ($, e) => ({ changed: e.changed }))
+  on('ui.render', { component: 'AbovePrompt' }, () => ({ type: 'Box', children: [] }))
+}
+
+function usage(breakdown: SessionContextBreakdown, isItemized: boolean): SessionUsage {
+  const context = { window: 200_000, tokens: breakdown.totalTokens, percent: breakdown.percentage }
+
+  return { startedAt: 0, context: isItemized ? { ...context, breakdown } : context, rateLimits: [] }
+}
+
+async function start($: Engine) {
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+}
+
+async function toggle($: Engine) {
+  await $.command.run({
+    command: 'context-bar',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: true, columns: 85 },
+  })
+}
+
+/** A turn ended and the window it measured is `breakdown`. */
+async function measure($: Engine, breakdown: SessionContextBreakdown) {
+  await $.session.measure({ context: usage(breakdown, false).context, rateLimits: [], changed: ['context'] })
+}
+
+type Drawn = { type: string; props?: Record<string, unknown>; children?: (Drawn | string)[] }
+type Drawing = { drawn: () => Promise<RenderElement> }
+
+/** The text an element shows: its strings in order, a Button's label included. */
+function shown(node: Drawn | string): string {
+  if (typeof node === 'string') return node
+  if (node.type === 'Button') return String(node.props?.label ?? '')
+
+  return (node.children ?? []).map(shown).join('')
+}
+
+function descendants(node: Drawn | string): Drawn[] {
+  return typeof node === 'string' ? [] : [node, ...(node.children ?? []).flatMap(descendants)]
+}
+
+/** The element the band last drew under `key`. */
+async function keyed(ui: Drawing, key: string): Promise<Drawn | undefined> {
+  return descendants((await ui.drawn()) as unknown as Drawn).find(node => node.props?.key === key)
+}
+
+/** The text the band shows under `key`, or undefined when it draws no such element. */
+async function textOf(ui: Drawing, key: string): Promise<string | undefined> {
+  const node = await keyed(ui, key)
+
+  return node && shown(node)
+}
+
+/** The bar's runs, left to right, each as its color and its length in cells. */
+async function barRunsOf(ui: Drawing): Promise<[unknown, number][]> {
+  const runs = (await keyed(ui, 'bar'))?.children ?? []
+
+  return runs.flatMap(run => (typeof run === 'string' ? [] : [[run.props?.color, shown(run).length]]))
+}
+
+/** The rows of the box under `key`, each as its text and the length of its bar in cells. */
+async function rowsOf(ui: Drawing, key: string): Promise<[string, number][]> {
+  const rows = (await keyed(ui, key))?.children ?? []
+
+  return rows.flatMap(row =>
+    typeof row === 'string' || !String(row.props?.key ?? '').startsWith('row:')
+      ? []
+      : [[shown(row), shown(row).split('▉').length - 1]],
+  )
+}
+
+const drillRows = (ui: Drawing) => rowsOf(ui, 'drill')
+
+/** Row texts with the bar folded to one cell and the spacing to one space. */
+const plain = (rows: [string, number][]) => rows.map(([text]) => text.replace(/▉+/, '▉').replace(/ +/g, ' ').trim())
+
+async function overhead($: Engine, category = '') {
+  return $.command.run({
+    command: 'context-bar',
+    args: `overhead ${category}`.trim(),
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: true, columns: 85 },
+  })
+}
+
+/** The colors of the legend's swatches, in order. */
+async function swatchColors(ui: Drawing): Promise<unknown[]> {
+  const legend = await keyed(ui, 'legend')
+
+  return (legend ? descendants(legend) : []).filter(node => shown(node) === '█').map(node => node.props?.color)
+}
+
+describe('context-bar', () => {
+  test('/context-bar shows the meter above the prompt, and run again hides it', async ($, on) => {
+    engine(on, () => BREAKDOWN)
+    mock.store(on)
+    await start($)
+
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount({ ...band(), surface })
+      expect(await textOf(ui, 'legend')).toBeUndefined()
+
+      await toggle($)
+      const header = await textOf(ui, 'header')
+      expect(header).toContain('context')
+      expect(header).toContain('62.4k used · compacts at 155k')
+      expect(header).toContain(' 40% ')
+      const legend = await textOf(ui, 'legend')
+      expect(legend).toContain('overhead 32.9k ▸')
+      expect(legend).toContain('messages 29.5k')
+      expect(legend).toContain('free 92.6k')
+      expect(await textOf(ui, 'breakdown')).toBe(
+        'overhead: tools 14.6k, mcp tools 9.8k, system 3.1k, skills 2k, mcp 1.2k, memory files 1.2k, agents 1k',
+      )
+
+      await toggle($)
+      expect(await textOf(ui, 'legend')).toBeUndefined()
+      await ui.unmount()
+    }
+  })
+
+  test('opens the overhead as ranked bars from its legend entry, and closes them again', async ($, on) => {
+    engine(on, () => BREAKDOWN)
+    mock.store(on)
+    await start($)
+    await toggle($)
+
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount({ ...band(), surface })
+      expect(await keyed(ui, 'drill')).toBeUndefined()
+
+      await ui.press({ key: 'overhead' })
+      expect(await textOf(ui, 'legend')).toContain('overhead 32.9k ▾')
+      expect(await keyed(ui, 'breakdown')).toBeUndefined()
+      const rows = await drillRows(ui)
+      expect(plain(rows)).toEqual([
+        'tools ▉ 14.6k',
+        'mcp tools ▸ ▉ 9.8k',
+        'system ▉ 3.1k',
+        'skills ▸ ▉ 2k',
+        'mcp ▉ 1.2k',
+        'memory files ▸ ▉ 1.2k',
+        'agents ▸ ▉ 1k',
+      ])
+      expect(rows.map(([, cells]) => cells)).toEqual([52, 35, 11, 7, 4, 4, 4])
+      expect(Math.max(...rows.map(([text]) => text.length))).toBeLessThanOrEqual(76)
+
+      await ui.press({ key: 'overhead' })
+      expect(await keyed(ui, 'drill')).toBeUndefined()
+      expect(await textOf(ui, 'breakdown')).toContain('overhead: tools 14.6k')
+      await ui.unmount()
+    }
+  })
+
+  test('/context-bar overhead opens the ranked bars, showing the card if it was hidden', async ($, on) => {
+    engine(on, () => BREAKDOWN)
+    mock.store(on)
+    await start($)
+    const ui = await $.ui.mount({ ...band(), surface: 'terminal' })
+
+    await overhead($)
+    expect(await textOf(ui, 'header')).toContain('62.4k used')
+    expect((await drillRows(ui)).length).toBe(7)
+
+    await overhead($)
+    expect(await keyed(ui, 'drill')).toBeUndefined()
+    expect(await textOf(ui, 'legend')).toContain('overhead 32.9k ▸')
+  })
+
+  test('answers an argument it does not know with the ones it does, changing nothing', async ($, on) => {
+    engine(on, () => BREAKDOWN)
+    mock.store(on)
+    await start($)
+    const ui = await $.ui.mount({ ...band(), surface: 'terminal' })
+
+    const { text } = await $.command.run({
+      command: 'context-bar',
+      args: 'everything',
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen: true, columns: 85 },
+    })
+
+    expect(text).toContain('/context-bar overhead')
+    expect(await textOf(ui, 'legend')).toBeUndefined()
+  })
+
+  test('opens a category to its items from its row, one category at a time', async ($, on) => {
+    engine(on, () => BREAKDOWN)
+    mock.store(on)
+    await start($)
+    await toggle($)
+
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount({ ...band(), surface })
+      await ui.press({ key: 'overhead' })
+      expect(await keyed(ui, 'items')).toBeUndefined()
+
+      await ui.press({ key: 'category:skills' })
+      expect(plain(await drillRows(ui))).toContain('skills ▾ ▉ 2k')
+      const skills = await rowsOf(ui, 'items')
+      expect(plain(skills)).toEqual([
+        'plugin-authoring ▉ 400',
+        'dataviz ▉ 300',
+        'superpowers:brainstorming ▉ 250',
+        'superpowers:test-driven-dev… ▉ 200',
+        'superpowers:writing-plans ▉ 200',
+        'frontend-design:frontend-de… ▉ 150',
+        'skill-creator ▉ 150',
+        'code-review ▉ 120',
+      ])
+      expect(skills.map(([, cells]) => cells)).toEqual([38, 29, 24, 19, 19, 14, 14, 11])
+      expect(Math.max(...skills.map(([text]) => text.length))).toBeLessThanOrEqual(76)
+      expect(await textOf(ui, 'more')).toContain('+ 2 more 230')
+
+      await ui.press({ key: 'category:mcp tools' })
+      expect(plain(await rowsOf(ui, 'items'))).toEqual(['playwright ▉ 5.6k', 'github ▉ 4.2k'])
+      expect(await keyed(ui, 'more')).toBeUndefined()
+
+      await ui.press({ key: 'category:mcp tools' })
+      expect(await keyed(ui, 'items')).toBeUndefined()
+      await ui.press({ key: 'overhead' })
+      await ui.unmount()
+    }
+  })
+
+  test('opens the rest of a long category, and folds it back', async ($, on) => {
+    engine(on, () => BREAKDOWN)
+    mock.store(on)
+    await start($)
+    await toggle($)
+
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount({ ...band(), surface })
+      await ui.press({ key: 'overhead' })
+      await ui.press({ key: 'category:skills' })
+      expect(await textOf(ui, 'more')).toBe('+ 2 more 230 ▸')
+
+      await ui.press({ key: 'more' })
+      const all = await rowsOf(ui, 'items')
+      expect(all.length).toBe(10)
+      expect(plain(all).slice(-2)).toEqual(['simplify ▉ 120', 'run ▉ 110'])
+      expect(await textOf(ui, 'more')).toBe('show fewer ▴')
+
+      await ui.press({ key: 'more' })
+      expect((await rowsOf(ui, 'items')).length).toBe(8)
+      expect(await textOf(ui, 'more')).toBe('+ 2 more 230 ▸')
+      await ui.press({ key: 'category:skills' })
+      await ui.press({ key: 'overhead' })
+      await ui.unmount()
+    }
+  })
+
+  test('folds a long category back when another one opens', async ($, on) => {
+    engine(on, () => BREAKDOWN)
+    mock.store(on)
+    await start($)
+    await toggle($)
+    const ui = await $.ui.mount({ ...band(), surface: 'terminal' })
+    await ui.press({ key: 'overhead' })
+    await ui.press({ key: 'category:skills' })
+    await ui.press({ key: 'more' })
+
+    await ui.press({ key: 'category:agents' })
+    await ui.press({ key: 'category:skills' })
+
+    expect((await rowsOf(ui, 'items')).length).toBe(8)
+    expect(await textOf(ui, 'more')).toBe('+ 2 more 230 ▸')
+  })
+
+  test('opens nothing for a category the breakdown does not itemize', async ($, on) => {
+    engine(on, () => BREAKDOWN)
+    mock.store(on)
+    await start($)
+    await toggle($)
+
+    const ui = await $.ui.mount({ ...band(), surface: 'terminal' })
+    await ui.press({ key: 'overhead' })
+    const buttons = await ui.findAll({ type: 'Button' })
+
+    expect(buttons.map(button => button.key)).toEqual([
+      'overhead',
+      'category:mcp tools',
+      'category:skills',
+      'category:memory files',
+      'category:agents',
+    ])
+  })
+
+  test('/context-bar overhead memory files opens that category from the keyboard', async ($, on) => {
+    engine(on, () => BREAKDOWN)
+    mock.store(on)
+    await start($)
+    const ui = await $.ui.mount({ ...band(), surface: 'terminal' })
+
+    await overhead($, 'memory files')
+
+    expect((await drillRows(ui)).length).toBe(7)
+    expect(plain(await rowsOf(ui, 'items'))).toEqual(['CLAUDE.md (user) ▉ 700', 'CLAUDE.md (project) ▉ 500'])
+  })
+
+  test('answers a category with nothing to open with the ones that have something', async ($, on) => {
+    engine(on, () => BREAKDOWN)
+    mock.store(on)
+    await start($)
+    await toggle($)
+    const ui = await $.ui.mount({ ...band(), surface: 'terminal' })
+
+    const { text } = await overhead($, 'system')
+
+    expect(text).toContain('mcp tools, skills, memory files or agents')
+    expect(await keyed(ui, 'items')).toBeUndefined()
+  })
+
+  test('writes every label in lower case', async ($, on) => {
+    engine(on, () => BREAKDOWN)
+    mock.store(on)
+    await start($)
+    await toggle($)
+
+    const ui = await $.ui.mount({ ...band(), surface: 'terminal' })
+    const card = shown((await ui.drawn()) as unknown as Drawn)
+    expect(card).toBe(card.toLowerCase())
+  })
+
+  test('fills toward compaction: overhead in gray, the conversation in the accent, the room left as the track', async ($, on) => {
+    engine(on, () => BREAKDOWN)
+    mock.store(on)
+    await start($)
+    await toggle($)
+
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount({ ...band(), surface })
+      expect(await barRunsOf(ui)).toEqual([
+        ['inactive', 16],
+        ['claude', 15],
+        ['subtle', 45],
+      ])
+      // Every cell is the same glyph, so all of them stand at one height with a thin gap after each.
+      expect((await textOf(ui, 'bar'))?.replaceAll('▉', '')).toBe('')
+      const bar = await keyed(ui, 'bar')
+      expect(descendants(bar!).some(node => node.props?.backgroundColor !== undefined)).toBe(false)
+      expect(await swatchColors(ui)).toEqual(['inactive', 'claude', 'subtle'])
+      await ui.unmount()
+    }
+  })
+
+  test('paints only with the theme keys the mod API documents', async ($, on) => {
+    engine(on, () => BREAKDOWN)
+    mock.store(on)
+    await start($)
+    await toggle($)
+
+    // The ThemeKey union in the mod API's types; any other key resolves today but is an internal.
+    const documented = [
+      'text', 'inverseText', 'inactive', 'subtle', 'suggestion', 'remember', 'success', 'error',
+      'warning', 'merged', 'claude', 'permission', 'planMode', 'autoAccept', 'promptBorder',
+      'bashBorder', 'ide', 'diffAdded', 'diffRemoved', 'diffAddedDimmed', 'diffRemovedDimmed',
+      'diffAddedWord', 'diffRemovedWord',
+    ]
+    const ui = await $.ui.mount({ ...band(), surface: 'terminal' })
+    const painted = descendants((await ui.drawn()) as unknown as Drawn).flatMap(node =>
+      [node.props?.color, node.props?.backgroundColor, node.props?.borderColor].filter(color => color !== undefined),
+    )
+
+    expect(painted.length).toBeGreaterThan(0)
+    expect(painted.filter(color => !documented.includes(String(color)))).toEqual([])
+  })
+
+  test('fills the card to its width, and drops the compaction note where it has no room', async ($, on) => {
+    engine(on, () => BREAKDOWN)
+    mock.store(on)
+    await start($)
+    await toggle($)
+
+    for (const columns of [80, 40, 12]) {
+      const ui = await $.ui.mount({ ...band(columns), surface: 'terminal' })
+      expect((await textOf(ui, 'bar'))?.length).toBe(columns - 4)
+      await ui.unmount()
+    }
+
+    const wide = await $.ui.mount({ ...band(80), surface: 'terminal' })
+    expect(await textOf(wide, 'header')).toContain('compacts at 155k')
+    const narrow = await $.ui.mount({ ...band(40), surface: 'terminal' })
+    expect(await textOf(narrow, 'header')).toContain('62.4k used')
+    expect(await textOf(narrow, 'header')).not.toContain('compacts at')
+  })
+
+  test('packs the legend into as few rows as fit', async ($, on) => {
+    engine(on, () => BREAKDOWN)
+    mock.store(on)
+    await start($)
+    await toggle($)
+
+    const rows = async (columns: number) => {
+      const ui = await $.ui.mount({ ...band(columns), surface: 'terminal' })
+      const legend = await keyed(ui, 'legend')
+      await ui.unmount()
+
+      return legend?.children?.length
+    }
+
+    expect(await rows(80)).toBe(1)
+    expect(await rows(40)).toBe(2)
+  })
+
+  test('follows the context as it grows, turn by turn', async ($, on) => {
+    let current = BREAKDOWN
+    engine(on, () => current)
+    mock.store(on)
+    await start($)
+    await toggle($)
+    const ui = await $.ui.mount({ ...band(), surface: 'terminal' })
+
+    current = LATER
+    await measure($, LATER)
+
+    expect(await textOf(ui, 'header')).toContain('110k used')
+    expect(await textOf(ui, 'legend')).toContain('messages 77k')
+  })
+
+  test('colors the percentage by how close compaction is', async ($, on) => {
+    let current = BREAKDOWN
+    engine(on, () => current)
+    mock.store(on)
+    await start($)
+    await toggle($)
+    const ui = await $.ui.mount({ ...band(), surface: 'terminal' })
+    const badge = async () => (await ui.findAll({ type: 'Text', text: /^ \d+% $/ }))[0]?.props.backgroundColor
+
+    expect(await badge()).toBe('success')
+
+    current = LATER
+    await measure($, LATER)
+    expect(await badge()).toBe('warning')
+
+    current = NEAR
+    await measure($, NEAR)
+    expect(await badge()).toBe('error')
+  })
+
+  test('remembers the choice for the next session', async ($, on) => {
+    engine(on, () => BREAKDOWN)
+    const saved = new Map<string, unknown>()
+    on('store.get', ($, e) => ({ value: saved.get(e.key) }))
+    on('store.set', ($, e) => {
+      saved.set(e.key, e.value)
+
+      return { value: undefined }
+    })
+    await start($)
+
+    await toggle($)
+    expect(saved.get('isVisible')).toBe(true)
+
+    await toggle($)
+    expect(saved.get('isVisible')).toBe(false)
+  })
+
+  test('comes back on in a session after one that turned it on', async ($, on) => {
+    engine(on, () => BREAKDOWN)
+    mock.store(on, { isVisible: true })
+    await start($)
+
+    const ui = await $.ui.mount({ ...band(), surface: 'terminal' })
+    expect(await textOf(ui, 'legend')).toContain('messages 29.5k')
+  })
+
+  for (const reason of ['clear', 'resume'] as const) {
+    test(`measures the new conversation after a /${reason}`, async ($, on) => {
+      let current = BREAKDOWN
+      engine(on, () => current)
+      mock.store(on)
+      const clock = mock.clock(on)
+      on('session.end', ($, e) => ({ sessionId: e.sessionId }))
+      await start($)
+      await toggle($)
+      const ui = await $.ui.mount({ ...band(), surface: 'terminal' })
+
+      current = CLEARED
+      await $.session.end({ reason, sessionId: 'before', resume: { id: 'before' } })
+      await clock.advance(1_000)
+
+      expect(await textOf(ui, 'header')).toContain('32.9k used')
+      expect(await textOf(ui, 'legend')).toContain('messages 0')
+    })
+  }
+
+  test('drops after a compaction', async ($, on) => {
+    let current = BREAKDOWN
+    engine(on, () => current)
+    mock.store(on)
+    const clock = mock.clock(on)
+    on('session.compact', () => ({ messages: [{ role: 'user', text: 'Summary: we built a context bar.', toolUses: [] }] }))
+    await start($)
+    await toggle($)
+    const ui = await $.ui.mount({ ...band(), surface: 'terminal' })
+
+    current = COMPACTED
+    await $.session.compact({
+      trigger: 'manual',
+      messages: [
+        { role: 'user', text: 'Build a context bar mod.', toolUses: [] },
+        { role: 'assistant', text: 'Built it; the tests pass.', toolUses: [] },
+      ],
+    })
+    await clock.advance(1_000)
+
+    expect(await textOf(ui, 'header')).toContain('36k used')
+  })
+
+  test('makes way for a survey', async ($, on) => {
+    engine(on, () => BREAKDOWN)
+    mock.store(on)
+    await start($)
+    await toggle($)
+
+    const ui = await $.ui.mount({ ...band(80, true), surface: 'terminal' })
+    expect(await textOf(ui, 'legend')).toBeUndefined()
+  })
+})
