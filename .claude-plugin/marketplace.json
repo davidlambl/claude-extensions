@@ -1,5 +1,5 @@
 {
-  "name": "lambl-extensions",
+  "name": "davidlambl",
   "owner": { "name": "David Lambl" },
   "metadata": { "description": "David Lambl's Claude Code mods, skills and plugins." },
   "plugins": [

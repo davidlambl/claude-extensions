@@ -23,7 +23,7 @@ To work on the extensions, install from a clone instead. It is read in place, so
 ```sh
 git clone https://github.com/davidlambl/claude-extensions
 claude plugin marketplace add ./claude-extensions
-claude plugin install context-bar@lambl-extensions
+claude plugin install context-bar@davidlambl
 ```
 
 ## Update
@@ -31,13 +31,13 @@ claude plugin install context-bar@lambl-extensions
 Claude Code updates plugins from this marketplace only when you ask; it auto-updates Anthropic's own marketplaces, not others, unless you turn it on. To get a new release:
 
 ```sh
-claude plugin marketplace update lambl-extensions
-claude plugin update context-bar@lambl-extensions
+claude plugin marketplace update davidlambl
+claude plugin update context-bar@davidlambl
 ```
 
 In a session, the same is `/plugin`, then **Installed**, `context-bar`, **Update now**. Then run `/reload-plugins`, or start a new session.
 
-To have releases arrive by themselves, open `/plugin`, then **Marketplaces**, `lambl-extensions`, **Enable auto-update**. A session then checks a few minutes after your first message, and `/reload-plugins` applies what it fetched.
+To have releases arrive by themselves, open `/plugin`, then **Marketplaces**, `davidlambl`, **Enable auto-update**. A session then checks a few minutes after your first message, and `/reload-plugins` applies what it fetched.
 
 Installed from a clone, the extensions are read in place: `git pull`, then `/reload-plugins`.
 
