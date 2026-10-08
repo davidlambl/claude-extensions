@@ -102,6 +102,30 @@ class Build(unittest.TestCase):
         with self.assertRaises(postman.Problem):
             self.build({"type": "oauth2"})
 
+    def test_the_parts_of_a_composite_secret_are_secrets(self):
+        b = self.build({"type": "bearer", "bearer": [{"key": "token", "value": "pre-{{apiKey}}-post"}]})
+        self.assertIn("sekret-123456", b["secrets"])
+        self.assertIn("pre-sekret-123456-post", b["secrets"])
+
+
+class Exposed(unittest.TestCase):
+    RECORD = {"url": "https://api.example.com/items", "auth": "none", "request_headers": {"Accept": "application/json"},
+              "response_headers": {}, "body": "ok"}
+
+    def test_a_clean_record_passes(self):
+        self.assertIsNone(postman.exposed(self.RECORD, ["sekret-123456"]))
+
+    def test_a_secret_in_the_body_or_a_header_is_found(self):
+        self.assertEqual(postman.exposed({**self.RECORD, "body": "token=sekret-123456"}, ["sekret-123456"]), "sekret-123456")
+        self.assertEqual(postman.exposed({**self.RECORD, "response_headers": {"Location": "/x?k=sekret-123456"}}, ["sekret-123456"]), "sekret-123456")
+
+    def test_encoded_and_escaped_forms_are_found(self):
+        self.assertEqual(postman.exposed({**self.RECORD, "body": "k=a%2Fb%3Dc%21x"}, ["a/b=c!x"]), "a/b=c!x")
+        self.assertEqual(postman.exposed({**self.RECORD, "body": 'say "quoted\\secret"'}, ['"quoted\\secret"']), '"quoted\\secret"')
+
+    def test_short_values_are_not_checked(self):
+        self.assertIsNone(postman.exposed({**self.RECORD, "body": "short"}, ["short"]))
+
 
 if __name__ == "__main__":
     unittest.main()

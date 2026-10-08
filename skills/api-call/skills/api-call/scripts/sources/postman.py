@@ -40,8 +40,9 @@ def scrub(text, secrets):
     return text
 
 
-def resolve(text, variables):
-    """{{name}} replaced from variables, up to five passes deep; an unknown or dynamic name raises Problem."""
+def resolve(text, variables, used=None):
+    """{{name}} replaced from variables, up to five passes deep; an unknown or dynamic name raises Problem.
+    Each value substituted is appended to `used` when given, so a secret's parts are known as well as its whole."""
     value = "" if text is None else str(text)
     for _ in range(5):
         if "{{" not in value:
@@ -51,6 +52,8 @@ def resolve(text, variables):
             name = m.group(1)
             if name not in variables:
                 raise Problem(f"variable '{name}' is not in the environment or the collection")
+            if used is not None:
+                used.append(str(variables[name]))
             return str(variables[name])
 
         value = TEMPLATE.sub(substitute, value)
@@ -121,19 +124,19 @@ def build(collection, environment, extra, folder_name, base_url_var, path):
     query = None
     if kind == "apikey":
         a = kv(auth.get("apikey"))
-        key, value = resolve(a.get("key"), variables), resolve(a.get("value"), variables)
+        key, value = resolve(a.get("key"), variables), resolve(a.get("value"), variables, secrets)
         secrets.append(value)
         if a.get("in") == "query":
             query, auth_text = (key, value), f"API key in query parameter {key}"
         else:
             headers[key], shown[key], auth_text = value, "********", f"API key in header {key}"
     elif kind == "bearer":
-        token = resolve(kv(auth.get("bearer")).get("token"), variables)
+        token = resolve(kv(auth.get("bearer")).get("token"), variables, secrets)
         secrets.append(token)
         headers["Authorization"], shown["Authorization"], auth_text = f"Bearer {token}", "Bearer ********", "bearer token"
     elif kind == "basic":
         b = kv(auth.get("basic"))
-        user, password = resolve(b.get("username"), variables), resolve(b.get("password"), variables)
+        user, password = resolve(b.get("username"), variables), resolve(b.get("password"), variables, secrets)
         token = base64.b64encode(f"{user}:{password}".encode("utf-8")).decode("ascii")
         secrets += [password, token]
         headers["Authorization"], shown["Authorization"], auth_text = f"Basic {token}", "Basic ********", f"basic auth as {user}"
@@ -147,6 +150,22 @@ def build(collection, environment, extra, folder_name, base_url_var, path):
     return {"url": url, "shown_url": shown_url, "headers": headers, "shown_headers": shown, "auth": auth_text,
             "folder": folder.get("name") if folder is not None else None, "path": path,
             "secrets": [s for s in secrets if s]}
+
+
+def exposed(record, secrets):
+    """The first secret that would be printed: in any string of the record, plain or URL-encoded, or in its JSON.
+    A value under six characters is too short to tell from ordinary text, and is not checked for."""
+    texts = [v for v in record.values() if isinstance(v, str)]
+    for d in (record.get("request_headers") or {}, record.get("response_headers") or {}):
+        texts += [str(k) for k in d] + [str(v) for v in d.values()]
+    texts.append(json.dumps(record, ensure_ascii=False))
+    for s in secrets:
+        if len(s) < 6:
+            continue
+        for form in {s, urllib.parse.quote(s, safe=""), urllib.parse.quote_plus(s)}:
+            if any(form in t for t in texts):
+                return s
+    return None
 
 
 def send(url, headers, cert, key, timeout):
@@ -198,6 +217,12 @@ def main():
         b = build(collection, environment, extra, args.folder, args.base_url_var, args.path)
     except Problem as e:
         sys.exit(str(e))
+    except Exception as e:  # an export of an unexpected shape; the message is masked with what is known to be secret
+        try:
+            known = load_variables(collection, environment, extra)[1]
+        except Exception:
+            known = [str(v) for v in extra.values()]
+        sys.exit(scrub(f"cannot build the request from the exports: {type(e).__name__}: {e}", known))
     try:
         status, response_headers, body, elapsed, sent = send(b["url"], b["headers"], args.cert, args.key, args.timeout)
     except Problem as e:
@@ -222,11 +247,9 @@ def main():
         "response_headers": {h: response_headers[h] for h in ("Content-Type", "Content-Length", "Date", "Location") if response_headers.get(h)},
         "body": body.decode("utf-8", errors="replace"),
     }
-    out = json.dumps(record, ensure_ascii=False)
-    for s in b["secrets"]:
-        if len(s) >= 6 and s in out:
-            sys.exit("refusing to print: a secret would appear in the output")
-    print(out)
+    if exposed(record, b["secrets"]):
+        sys.exit("refusing to print: a secret would appear in the output")
+    print(json.dumps(record, ensure_ascii=False))
 
 
 if __name__ == "__main__":

@@ -75,14 +75,16 @@ if ($subName) {
 foreach ($layer in $layers) { if ($layer) { foreach ($k in @($layer.Keys)) { $vars[$k] = $layer[$k] } } }
 
 # {{ name }}, {{ _.name }} and {{ _['name'] }} only; Nunjucks tags such as {% response %} are not supported.
+# Each value substituted is added to $used when given, so a secret's parts are known as well as its whole.
 $templateRx = '\{\{\s*(?:_\.([A-Za-z0-9_\-]+)|_\[\s*[''"]([^''"]+)[''"]\s*\]|([A-Za-z0-9_\-]+))\s*\}\}'
-function Resolve-Template([string]$text) {
+function Resolve-Template([string]$text, [Collections.Generic.List[string]]$used) {
     if ($null -eq $text) { return '' }
     $value = $text
     for ($i = 0; $i -lt 5 -and $value -match '\{\{'; $i++) {
         foreach ($m in [regex]::Matches($value, $templateRx)) {
             $name = @($m.Groups[1].Value, $m.Groups[2].Value, $m.Groups[3].Value) | Where-Object { $_ } | Select-Object -First 1
             if (-not $vars.ContainsKey($name)) { throw "variable '$name' is not in environment '$Environment'" }
+            if ($null -ne $used) { $used.Add([string]$vars[$name]) }
             $value = $value.Replace($m.Value, [string]$vars[$name])
         }
     }
@@ -120,13 +122,13 @@ if ($folderDoc -and $folderDoc['authentication'] -and $folderDoc['authentication
     $a = $folderDoc['authentication']
     switch ($a['type']) {
         'apikey' {
-            $k = Resolve-Template ([string]$a['key']); $v = Resolve-Template ([string]$a['value'])
+            $k = Resolve-Template ([string]$a['key']); $v = Resolve-Template ([string]$a['value']) $secrets
             $secrets.Add($v)
             if ($a['addTo'] -eq 'queryParams') { $queryKey = $k; $queryValue = $v; $authText = "API key in query parameter $k" }
             else { $headers[$k] = $v; $shownHeaders[$k] = '********'; $authText = "API key in header $k" }
         }
         'bearer' {
-            $t = Resolve-Template ([string]$a['token'])
+            $t = Resolve-Template ([string]$a['token']) $secrets
             $p = if ($a['prefix']) { Resolve-Template ([string]$a['prefix']) } else { 'Bearer' }
             $secrets.Add($t); $headers['Authorization'] = "$p $t"; $shownHeaders['Authorization'] = "$p ********"; $authText = 'bearer token'
         }
@@ -135,7 +137,8 @@ if ($folderDoc -and $folderDoc['authentication'] -and $folderDoc['authentication
 }
 foreach ($h in @($folderDoc ? $folderDoc['headers'] : @())) {
     if (-not $h -or $h['disabled'] -or -not $h['name']) { continue }
-    $name = Resolve-Template ([string]$h['name']); $raw = [string]$h['value']; $value = Resolve-Template $raw
+    $name = Resolve-Template ([string]$h['name']); $raw = [string]$h['value']
+    $value = Resolve-Template $raw ($(if ($raw -match '\{\{') { $secrets } else { $null }))
     $headers[$name] = $value
     if ($raw -match '\{\{') { $secrets.Add($value); $shownHeaders[$name] = '********' } else { $shownHeaders[$name] = $value }
 }
@@ -229,5 +232,16 @@ $json = [ordered]@{
     body            = $body
 } | ConvertTo-Json -Depth 6 -Compress
 
-foreach ($s in $secrets) { if ($s -and $s.Length -ge 6 -and $json.Contains($s)) { throw 'refusing to print: a secret would appear in the output' } }
+# No secret may appear in what is printed: in any string of the record, plain or URL-encoded, or in the JSON, where
+# escaping could hide it. A value under six characters is too short to tell from ordinary text, and is not checked for.
+$shown = [Collections.Generic.List[string]]::new()
+foreach ($t in @($Environment, $Collection, $shownUrl, $authText, $certName, $body, $json) + @($shownHeaders.Keys) + @($shownHeaders.Values) + @($responseHeaders.Values)) {
+    if ($t) { $shown.Add([string]$t) }
+}
+foreach ($s in $secrets) {
+    if (-not $s -or $s.Length -lt 6) { continue }
+    foreach ($form in @($s, [Uri]::EscapeDataString($s))) {
+        foreach ($t in $shown) { if ($t.Contains($form)) { throw 'refusing to print: a secret would appear in the output' } }
+    }
+}
 $json
