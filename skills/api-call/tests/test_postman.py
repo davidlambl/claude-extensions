@@ -54,7 +54,7 @@ class Build(unittest.TestCase):
         b = self.build(path="items/1")
         self.assertEqual(b["url"], "https://api.example.com/items/1")
         self.assertEqual(b["shown_url"], b["url"])
-        self.assertEqual(b["headers"], {"Accept": "application/json"})
+        self.assertEqual(b["headers"], {"Accept": "application/json", "User-Agent": "api-call"})
         self.assertEqual((b["auth"], b["folder"], b["path"], b["secrets"]), ("none", None, "/items/1", ["sekret-123456"]))
 
     def test_api_key_in_header_is_sent_and_masked(self):

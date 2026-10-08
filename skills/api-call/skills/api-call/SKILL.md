@@ -21,7 +21,7 @@ python3 <base>/scripts/call.py --via insomnia --env "API - Test" --collection "A
 ```
 
 - `--via postman` takes the export files instead: `--env "<dir>/API - Test.postman_environment.json" --collection "<dir>/API.postman_collection.json"`. Secrets kept out of the export go in a `--vars` file; a client certificate is `--cert` and `--key`, in PEM.
-- `--expect` is the status the step should return. A mismatch exits 3; the record and the image are still written. Report a mismatch as a finding; never retake until it passes.
+- `--expect` is the status the step should return. A mismatch exits 3; the record and the image are still written. Report a mismatch as a finding; never retake until it passes. A redirect is recorded as its 3xx, never followed.
 - `--warm` sends once untimed first, so a cold start after a deploy does not show in the timing.
 - `--label` leads the image's title, such as `"After: Test (this change)"`. For a before-and-after pair, run the step twice, once per environment, with a label for each.
 - Only GET. Anything else is the user's to run.

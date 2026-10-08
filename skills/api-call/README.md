@@ -25,7 +25,7 @@ One JSON object per call, and the interface between a source and whatever reads 
 | `client_cert` | the client certificate's file name, or null |
 | `status`, `elapsed_ms` | the response's status, and how long it took |
 | `sent`, `sent_utc` | when it was sent, in local time with its offset and in UTC |
-| `response_headers` | `Content-Type`, `Content-Length` and `Date`, where present |
+| `response_headers` | `Content-Type`, `Content-Length`, `Date` and `Location`, where present |
 | `body` | the response body as text |
 
 `call.py` adds `label`, `expected` and `verdict` (`PASS`, `FAIL` or null), and with `--shot` the image's path as `png`.
@@ -34,7 +34,7 @@ One JSON object per call, and the interface between a source and whatever reads 
 
 A step through Insomnia that passed. The title carries the label and the path, the request shows the headers as sent, and the body is the response as returned, pretty-printed when it is JSON:
 
-![A GET to the GitHub API through Insomnia: HTTP 200 OK, with the request headers and a four-line JSON body](screenshots/api-call-pass.png)
+![A GET to the GitHub API through Insomnia: HTTP 200 OK, with the request headers and a short JSON body](screenshots/api-call-pass.png)
 
 A step through Postman whose status did not match `--expect 200`. The image is still written, the status line is red, and the script exits 3, so the mismatch is reported as a finding rather than retaken:
 
@@ -91,6 +91,7 @@ A before-and-after pair is two runs of the same step, one per environment, each 
 - **It sends real requests** to the environments you name, GET only. Pointed at production, it calls production: choose inputs that return test data, never a customer's.
 - **The images show the response body as returned.** Look at each one before you share it.
 - **Secrets stay in the source's process.** Keys, tokens and certificate passphrases are never printed, written or drawn; a client certificate appears by file name only, and a source refuses to print anything that would contain a secret. A folder header whose value is typed in, not templated, is not a secret to the script and is drawn as typed, so keep secrets in environment variables.
+- **A redirect is recorded, never followed.** A 3xx is the response, with its `Location` header, so a key is sent only to the host the collection named.
 - **It reads Insomnia's files and Postman's exports, and never writes them.** Insomnia: global environments and their sub-environments, `{{ name }}`, `{{ _.name }}` and `{{ _['name'] }}` templates, API key and bearer auth on a top-level folder, PFX and PEM client certificates. Postman: collection and environment variables, `{{name}}` templates, API key, bearer and basic auth on the collection or a top-level folder, PEM client certificates. Not supported: Nunjucks tags such as `{% response %}`, Postman's dynamic variables such as `{{$guid}}` and scripts, request-level auth, Insomnia's collection environments.
 - **Each image is written with its `.html` page, and each call with its `.json` record**, secrets excluded.
 

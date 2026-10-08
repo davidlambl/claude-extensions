@@ -10,7 +10,8 @@ Reads Insomnia's local data, read-only:
 
 Secrets stay in this process. The JSON it prints shows auth and templated header values as ********, a client
 certificate by file name only, and an API key sent as a query parameter as ********. The script refuses to print
-if any resolved secret would appear in its output.
+if any resolved secret would appear in its output. A redirect is recorded as the response, never followed, so a key
+is sent only to the host the collection named.
 
 .EXAMPLE
 pwsh -NoProfile -File insomnia.ps1 -Environment "My API - Test" -Collection "My API" -Path /api/items/42
@@ -25,6 +26,14 @@ param(
     [int]$TimeoutSec = 60
 )
 $ErrorActionPreference = 'Stop'
+# Any error ends the script with its message alone, plain and with every secret masked, instead of PowerShell's
+# formatted error view.
+trap {
+    $text = [string]$_.Exception.Message
+    if ($secrets) { foreach ($s in $secrets) { if ($s) { $text = $text.Replace($s, '********') } } }
+    [Console]::Error.WriteLine($text)
+    exit 1
+}
 
 if (-not $InsomniaDir) {
     $InsomniaDir = if ($env:INSOMNIA_DATA) { $env:INSOMNIA_DATA }
@@ -102,8 +111,8 @@ if ($Folder) {
     if ($withAuth.Count -eq 1) { $folderDoc = $withAuth[0] }
 }
 
-$headers = [ordered]@{ 'Accept' = 'application/json' }
-$shownHeaders = [ordered]@{ 'Accept' = 'application/json' }
+$headers = [ordered]@{ 'Accept' = 'application/json'; 'User-Agent' = 'api-call' }
+$shownHeaders = [ordered]@{ 'Accept' = 'application/json'; 'User-Agent' = 'api-call' }
 $secrets = [Collections.Generic.List[string]]::new()
 $authText = 'none'
 $queryKey = $null; $queryValue = $null
@@ -167,27 +176,39 @@ if ($certDocs.Count -eq 1) {
     }
 }
 
-$request = @{ Uri = $uri; Method = 'Get'; Headers = $headers; SkipHttpErrorCheck = $true; TimeoutSec = $TimeoutSec }
-if ($cert) { $request.Certificate = $cert }
+# The request goes through HttpClient, as Invoke-WebRequest's does, with redirects off: a redirect is recorded as the
+# response, never followed, since .NET would resend a key header to whatever host it points at.
+$handler = [Net.Http.HttpClientHandler]::new()
+$handler.AllowAutoRedirect = $false
+if ($cert) { [void]$handler.ClientCertificates.Add($cert) }
+$client = [Net.Http.HttpClient]::new($handler)
+$client.Timeout = [TimeSpan]::FromSeconds($TimeoutSec)
+$message = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Get, $uri)
+foreach ($k in $headers.Keys) { [void]$message.Headers.TryAddWithoutValidation($k, [string]$headers[$k]) }
 $sent = [DateTimeOffset]::Now
 $watch = [Diagnostics.Stopwatch]::StartNew()
 try {
-    $response = Invoke-WebRequest @request
+    $response = $client.SendAsync($message).GetAwaiter().GetResult()
+    $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
 } catch {
-    # A failed request's message can quote the URL, and with it an API key sent as a query parameter.
-    $e = $_.Exception; $parts = @()
-    while ($e) { $parts += $e.Message; $e = $e.InnerException }
-    $message = ($parts | Select-Object -Unique) -join ' '
-    foreach ($s in $secrets) { if ($s) { $message = $message.Replace($s, '********') } }
-    throw "the request failed: $message"
+    # The .NET exception under PowerShell's wrapper, with its cause; the trap masks any secret the message quotes.
+    $e = $_.Exception
+    while ($e -is [Management.Automation.MethodInvocationException] -and $e.InnerException) { $e = $e.InnerException }
+    $text = [string]$e.Message
+    if ($e.InnerException -and $e.InnerException.Message -and -not $text.Contains($e.InnerException.Message)) { $text += ' ' + $e.InnerException.Message }
+    throw "the request failed: $text"
 } finally {
     $watch.Stop()
+    $client.Dispose()
     if ($cert) { $cert.Dispose() }
 }
 
+# .NET keeps Content-* headers on the content and the rest on the response; gather both, then pick the four shown.
+$all = @{}
+foreach ($pair in $response.Headers) { $all[$pair.Key.ToLowerInvariant()] = ($pair.Value -join ', ') }
+foreach ($pair in $response.Content.Headers) { $all[$pair.Key.ToLowerInvariant()] = ($pair.Value -join ', ') }
 $responseHeaders = [ordered]@{}
-foreach ($h in 'Content-Type', 'Content-Length', 'Date') { if ($response.Headers[$h]) { $responseHeaders[$h] = ($response.Headers[$h] -join ', ') } }
-$body = if ($response.Content -is [byte[]]) { [Text.Encoding]::UTF8.GetString($response.Content) } else { [string]$response.Content }
+foreach ($h in 'Content-Type', 'Content-Length', 'Date', 'Location') { if ($all.ContainsKey($h.ToLowerInvariant())) { $responseHeaders[$h] = $all[$h.ToLowerInvariant()] } }
 
 $json = [ordered]@{
     source          = 'insomnia'

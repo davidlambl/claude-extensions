@@ -13,7 +13,8 @@ it is a secret. A client certificate is PEM: --cert and --key, with API_CALL_KEY
 Only {{name}} templates are resolved; dynamic variables such as {{$guid}} and scripts are not.
 
 Secrets stay in this process. The JSON it prints shows auth values as ********, and the script refuses to print
-if any resolved secret would appear in its output.
+if any resolved secret would appear in its output. A redirect is recorded as the response, never followed, so a key
+is sent only to the host the collection named.
 """
 import argparse, base64, json, os, re, ssl, sys, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timezone
@@ -24,6 +25,19 @@ TEMPLATE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 
 class Problem(Exception):
     """A reason the request cannot be built; its text is safe to print."""
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect is recorded as the response, never followed: urllib would resend the auth headers to any host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def scrub(text, secrets):
+    for s in secrets:
+        text = text.replace(s, "********")
+    return text
 
 
 def resolve(text, variables):
@@ -101,8 +115,8 @@ def build(collection, environment, extra, folder_name, base_url_var, path):
     folder = pick_folder(collection, folder_name)
     auth = (folder if folder is not None else collection).get("auth") or {}
     kind = auth.get("type") or "noauth"
-    headers = {"Accept": "application/json"}
-    shown = {"Accept": "application/json"}
+    headers = {"Accept": "application/json", "User-Agent": "api-call"}
+    shown = {"Accept": "application/json", "User-Agent": "api-call"}
     auth_text = "none"
     query = None
     if kind == "apikey":
@@ -147,12 +161,13 @@ def send(url, headers, cert, key, timeout):
     if cert:
         context.load_cert_chain(cert, key, password=os.environ.get("API_CALL_KEY_PASSPHRASE") or None)
     request = urllib.request.Request(url, headers=headers, method="GET")
+    opener = urllib.request.build_opener(NoRedirect(), urllib.request.HTTPSHandler(context=context))
     sent = datetime.now().astimezone()
     start = time.perf_counter()
     try:
-        with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
+        with opener.open(request, timeout=timeout) as response:
             body, status, response_headers = response.read(), response.status, response.headers
-    except urllib.error.HTTPError as e:
+    except urllib.error.HTTPError as e:  # a status of 300 or more, a redirect among them
         body, status, response_headers = e.read(), e.code, e.headers
     return status, response_headers, body, round((time.perf_counter() - start) * 1000), sent
 
@@ -186,12 +201,9 @@ def main():
     try:
         status, response_headers, body, elapsed, sent = send(b["url"], b["headers"], args.cert, args.key, args.timeout)
     except Problem as e:
-        sys.exit(str(e))
+        sys.exit(scrub(str(e), b["secrets"]))
     except Exception as e:  # a failed request's message can quote the URL, and with it a key in the query
-        message = str(e)
-        for s in b["secrets"]:
-            message = message.replace(s, "********")
-        sys.exit(f"the request failed: {message}")
+        sys.exit(scrub(f"the request failed: {type(e).__name__}: {e}", b["secrets"]))
     record = {
         "source": "postman",
         "environment": environment.get("name") or Path(args.env).stem,
@@ -207,7 +219,7 @@ def main():
         "elapsed_ms": elapsed,
         "sent": sent.isoformat(timespec="milliseconds"),
         "sent_utc": sent.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{sent.microsecond // 1000:03d}Z",
-        "response_headers": {h: response_headers[h] for h in ("Content-Type", "Content-Length", "Date") if response_headers.get(h)},
+        "response_headers": {h: response_headers[h] for h in ("Content-Type", "Content-Length", "Date", "Location") if response_headers.get(h)},
         "body": body.decode("utf-8", errors="replace"),
     }
     out = json.dumps(record, ensure_ascii=False)
