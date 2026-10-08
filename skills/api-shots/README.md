@@ -50,7 +50,7 @@ python3 skills/api-shots/scripts/post_ado.py --org https://dev.azure.com/my-org 
 
 - **It sends real requests** to the environments you name, GET only. Pointed at production, it calls production: choose inputs that return test data, never a customer's.
 - **The images show the response body as returned.** Look at each one before you post it.
-- **Secrets stay in the PowerShell process.** Keys, tokens and certificate passphrases are never printed, written or drawn; the client certificate appears by file name only, and the script refuses to print anything that would contain a secret.
+- **Secrets stay in the PowerShell process.** Keys, tokens and certificate passphrases are never printed, written or drawn; the client certificate appears by file name only, and the script refuses to print anything that would contain a secret. A folder header whose value is typed in, not templated, is not a secret to the script and is drawn as typed, so keep secrets in environment variables.
 - **It reads Insomnia's files and never writes them.** Supported: global environments and their sub-environments, `{{ name }}`, `{{ _.name }}` and `{{ _['name'] }}` templates, API key and bearer auth on a top-level folder, PFX and PEM client certificates. Not supported: Nunjucks tags such as `{% response %}`, request-level auth, collection environments.
-- **Posting acts as you.** It uploads attachments and adds or edits a comment under your Azure DevOps identity. Run with `--dry-run` first.
+- **Posting acts as you.** It uploads attachments and adds or edits a comment under your Azure DevOps identity. Run with `--dry-run` first. Your token is sent only to `https://dev.azure.com` or `https://<org>.visualstudio.com`, and an image is named by its file name alone, looked up in the images folder.
 - Each image is written with its `.html` page and a `.json` record of the exchange, secrets excluded.

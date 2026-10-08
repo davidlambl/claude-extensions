@@ -11,6 +11,7 @@ comment instead of adding one; its earlier images are left in place, unreference
 
 Auth: AZURE_DEVOPS_TOKEN if set, otherwise a token from the Azure CLI
 (az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798, the Azure DevOps resource).
+The token is sent only to --org, which must be https://dev.azure.com/ORG or https://ORG.visualstudio.com.
 After posting it reads the comment back and checks that every image renders and matches the local file.
 """
 import argparse, hashlib, html, json, os, re, shutil, subprocess, sys, urllib.parse, urllib.request
@@ -27,12 +28,26 @@ p.add_argument("--dry-run", action="store_true")
 args = p.parse_args()
 
 org = args.org.rstrip("/")
+
+
+def azure_devops(url):
+    """True for the hosts that may see the token: Azure DevOps Services only, over TLS."""
+    u = urllib.parse.urlsplit(url)
+    host = (u.hostname or "").lower()
+    return u.scheme == "https" and (host == "dev.azure.com" or host.endswith(".visualstudio.com"))
+
+
+if not azure_devops(org):
+    sys.exit("--org must be https://dev.azure.com/ORG or https://ORG.visualstudio.com; the token goes nowhere else")
 project = urllib.parse.quote(args.project)
 comment_file = Path(args.comment).resolve()
 images_dir = Path(args.images).resolve() if args.images else comment_file.parent
 text = comment_file.read_text(encoding="utf-8")
 tokens = re.findall(r"\{\{image:([^}]+)\}\}", text)
 files = {name: images_dir / name for name in dict.fromkeys(t.strip() for t in tokens)}
+not_names = [n for n in files if n in ("", ".", "..") or re.search(r"[/\\]", n)]
+if not_names:
+    sys.exit("an image is named by its file name alone, looked up in the images folder: " + ", ".join(not_names))
 missing = [str(f) for f in files.values() if not f.is_file()]
 if missing:
     sys.exit("missing images: " + ", ".join(missing))
@@ -91,6 +106,10 @@ rendered = back.get("renderedText") or ""
 checks = {"stored text matches": html.unescape(back["text"]) == html.unescape(text),
           "images rendered": rendered.count("<img") == len(urls)}
 for name, url in urls.items():
+    if not azure_devops(url):
+        print(f"not reading back {name}: its attachment url is not on Azure DevOps")
+        checks[f"{name} matches local file"] = False
+        continue
     stored = call("GET", url.split("?")[0] + "?download=true&api-version=7.1", raw=True)
     checks[f"{name} matches local file"] = hashlib.sha256(stored).digest() == hashlib.sha256(files[name].read_bytes()).digest()
 for k, v in checks.items():

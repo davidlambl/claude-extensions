@@ -171,9 +171,19 @@ $request = @{ Uri = $uri; Method = 'Get'; Headers = $headers; SkipHttpErrorCheck
 if ($cert) { $request.Certificate = $cert }
 $sent = [DateTimeOffset]::Now
 $watch = [Diagnostics.Stopwatch]::StartNew()
-$response = Invoke-WebRequest @request
-$watch.Stop()
-if ($cert) { $cert.Dispose() }
+try {
+    $response = Invoke-WebRequest @request
+} catch {
+    # A failed request's message can quote the URL, and with it an API key sent as a query parameter.
+    $e = $_.Exception; $parts = @()
+    while ($e) { $parts += $e.Message; $e = $e.InnerException }
+    $message = ($parts | Select-Object -Unique) -join ' '
+    foreach ($s in $secrets) { if ($s) { $message = $message.Replace($s, '********') } }
+    throw "the request failed: $message"
+} finally {
+    $watch.Stop()
+    if ($cert) { $cert.Dispose() }
+}
 
 $responseHeaders = [ordered]@{}
 foreach ($h in 'Content-Type', 'Content-Length', 'Date') { if ($response.Headers[$h]) { $responseHeaders[$h] = ($response.Headers[$h] -join ', ') } }
