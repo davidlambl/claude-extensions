@@ -7,6 +7,11 @@
       "name": "context-bar",
       "source": "./mods/context-bar",
       "description": "Your context window as a meter above the prompt: the conversation, the overhead every request carries, and the room left before compaction, with a drill-down into the overhead. Toggle it with /context-bar."
+    },
+    {
+      "name": "api-shots",
+      "source": "./skills/api-shots",
+      "description": "Runs an API test step the way your Insomnia collection would, screenshots the request and response (with an optional before-and-after pair), and posts captioned evidence to an Azure DevOps work item."
     }
   ]
 }
