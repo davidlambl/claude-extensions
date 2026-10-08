@@ -1,0 +1,6 @@
+{
+  "name": "api-call",
+  "version": "0.2.0",
+  "description": "Calls an API the way your Insomnia or Postman collection would, with its environment, auth and client certificate, records the exchange as JSON with every secret masked, and screenshots it on request.",
+  "author": { "name": "David Lambl" }
+}

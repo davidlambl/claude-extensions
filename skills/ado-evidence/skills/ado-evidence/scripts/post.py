@@ -1,8 +1,8 @@
 """Posts a markdown comment with screenshots to an Azure DevOps work item.
 
 Usage:
-  python3 post_ado.py --org https://dev.azure.com/ORG --project PROJECT --work-item ID --comment comment.md
-                      [--images DIR] [--edit COMMENT_ID] [--dry-run]
+  python3 post.py --org https://dev.azure.com/ORG --project PROJECT --work-item ID --comment comment.md
+                  [--images DIR] [--edit COMMENT_ID] [--dry-run]
 
 In the comment, write {{image:file.png}} where a screenshot goes. Each referenced file (looked up in --images,
 default: the comment's folder) is uploaded as a work item attachment and embedded as ![file.png](url).

@@ -1,0 +1,30 @@
+{
+  "info": {
+    "_postman_id": "3f6a0c2e-7b1d-4e8a-9c5f-2d4b6a8e0f13",
+    "name": "GitHub",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Repositories",
+      "item": [
+        {
+          "name": "Languages",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/repos/davidlambl/claude-extensions/languages",
+              "host": ["{{baseUrl}}"],
+              "path": ["repos", "davidlambl", "claude-extensions", "languages"]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    { "key": "baseUrl", "value": "https://api.github.com", "type": "string" }
+  ]
+}

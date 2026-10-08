@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Sends one GET the way an Insomnia collection would and prints the exchange as JSON.
+Sends one GET the way an Insomnia collection would and prints the exchange as JSON: the api-call record.
 
 .DESCRIPTION
 Reads Insomnia's local data, read-only:
@@ -13,7 +13,7 @@ certificate by file name only, and an API key sent as a query parameter as *****
 if any resolved secret would appear in its output.
 
 .EXAMPLE
-pwsh -NoProfile -File call.ps1 -Environment "My API - Test" -Collection "My API" -Path /api/items/42
+pwsh -NoProfile -File insomnia.ps1 -Environment "My API - Test" -Collection "My API" -Path /api/items/42
 #>
 param(
     [Parameter(Mandatory)][string]$Environment,
@@ -190,10 +190,12 @@ foreach ($h in 'Content-Type', 'Content-Length', 'Date') { if ($response.Headers
 $body = if ($response.Content -is [byte[]]) { [Text.Encoding]::UTF8.GetString($response.Content) } else { [string]$response.Content }
 
 $json = [ordered]@{
+    source          = 'insomnia'
     environment     = $Environment
     collection      = $Collection
     folder          = $folderDoc ? $folderDoc['name'] : $null
     method          = 'GET'
+    path            = $Path
     url             = $shownUrl
     auth            = $authText
     request_headers = $shownHeaders

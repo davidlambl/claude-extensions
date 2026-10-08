@@ -1,6 +1,0 @@
-{
-  "name": "api-shots",
-  "version": "0.1.1",
-  "description": "Runs an API test step the way your Insomnia collection would, screenshots the request and response (with an optional before-and-after pair), and posts captioned evidence to an Azure DevOps work item.",
-  "author": { "name": "David Lambl" }
-}

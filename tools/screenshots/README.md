@@ -9,6 +9,8 @@ How it works:
 3. `render.mjs` replays the recording through [xterm.js](https://xtermjs.org), the terminal VS Code uses, and writes each marked screen as a terminal window. A shot starts at the first prompt, past the startup banner, and long empty stretches are squeezed to two rows; nothing drawn is changed.
 4. Headless Chrome captures each window as `<name>-<mark>.png`.
 
+The window frame is the api-call skill's `frame.html` (`skills/api-call/skills/api-call/scripts/`), read from there so that an installed copy of the skill carries it; that skill draws its own screenshots in the same frame.
+
 ## Use it
 
 Requirements: Claude Code, Python 3, Node.js 18 or later, and Google Chrome or Chromium (set `CHROME` to its path if it is not in the usual place). Works on macOS and Linux.

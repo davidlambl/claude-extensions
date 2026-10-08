@@ -1,17 +1,24 @@
 // Replays a recorded Claude Code session through xterm.js and writes each marked
 // screen as a terminal window in HTML, ready for a browser to capture.
 import { readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import xterm from '@xterm/headless'
 
 const { Terminal } = xterm
 
+// The window frame belongs to the api-call skill, so that an installed copy of the skill carries it;
+// this tool, which only runs from the repository, reads it in place.
+const FRAME_FILE = join(dirname(fileURLToPath(import.meta.url)), '../../skills/api-call/skills/api-call/scripts/frame.html')
+
+// The frame's text and background, for cells drawn inverse.
 const FG = '#e4e4e7'
 const BG = '#1c1c1f'
 // The 16 ANSI colors, toned for a dark window; Claude Code draws most of its UI in true color.
 const ANSI = ['#1c1c1f', '#e06c75', '#98c379', '#e5c07b', '#61afef', '#c678dd', '#56b6c2', '#d4d4d8',
   '#5c6370', '#ef7b85', '#a9d48a', '#f0cf8c', '#74bdf5', '#d38ae6', '#67c7d3', '#ffffff']
 
-/** The window's title bar and row heights, in pixels: what a capture's height is made of. */
+/** The frame's title bar, padding and row heights, in pixels: what a capture's height is made of. */
 export const FRAME = { titleBar: 37, padding: 22, row: 20 }
 
 const hex = n => `#${n.toString(16).padStart(6, '0')}`
@@ -101,14 +108,9 @@ function keptRows(text) {
   return kept
 }
 
+/** The frame with the title and the screen's HTML in place; a function replacement keeps `$` in them literal. */
 function page(title, body) {
-  return `<!doctype html><meta charset="utf-8"><style>
-html,body{margin:0;background:${BG}}
-.bar{height:36px;display:flex;align-items:center;position:relative;background:#2a2a2e;border-bottom:1px solid #111}
-.dots{position:absolute;left:14px;display:flex;gap:8px}.dots i{width:12px;height:12px;border-radius:50%;display:block}
-.title{width:100%;text-align:center;color:#a1a1aa;font:13px "SF Mono",Menlo,monospace}
-pre{margin:0;padding:10px 18px 12px;color:${FG};font:15px/${FRAME.row}px "SF Mono",Menlo,monospace;white-space:pre}
-</style><div class="bar"><div class="dots"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div><div class="title">${escape(title)}</div></div><pre>${body}</pre>`
+  return readFileSync(FRAME_FILE, 'utf8').replaceAll('{{title}}', () => escape(title)).replaceAll('{{body}}', () => body)
 }
 
 /**
