@@ -1,5 +1,7 @@
 # Claude extensions
 
+[![check](https://github.com/davidlambl/claude-extensions/actions/workflows/check.yml/badge.svg)](https://github.com/davidlambl/claude-extensions/actions/workflows/check.yml)
+
 Mods, skills and plugins for [Claude Code](https://claude.com/claude-code). The repository is also a plugin marketplace, so everything in it installs with one command. Each extension has its own folder and README, which says what it needs and what it touches.
 
 | Extension | Kind | What it does |
@@ -29,11 +31,15 @@ claude plugin marketplace update davidlambl
 claude plugin update context-bar@davidlambl
 ```
 
-Then run `/reload-plugins`, or start a new session.
+Then run `/reload-plugins`, or start a new session. [CHANGELOG.md](CHANGELOG.md) says what each version changed.
 
 ## Develop
 
-[CONTRIBUTING.md](CONTRIBUTING.md) has the layout of a mod and of a skill plugin, the commands that validate and test them, how an extension is listed in the marketplace, and how the screenshots are taken.
+[CONTRIBUTING.md](CONTRIBUTING.md) has the layout of a mod and of a skill plugin, the commands that validate and test them, how an extension is listed in the marketplace, and how the screenshots and evals are run.
+
+## Security
+
+These extensions read credentials and act under your identity. [SECURITY.md](SECURITY.md) says what each one touches, what the code guarantees, and how to report a vulnerability.
 
 ## License
 

@@ -10,6 +10,14 @@ It comes as a skill: ask Claude to post the evidence on a work item, and it draf
 2. It adds the comment in markdown, or with `--edit` replaces the text of one you already posted.
 3. It reads the comment back and checks that the stored text matches, that every image renders and that each one matches the local file, and exits 1 if any check fails.
 
+## Demo
+
+`--dry-run` prints the comment exactly as it would be posted, with each image's size in place of the upload, and touches nothing:
+
+![The dry-run preview in a terminal: the command, then the comment with a bold caption above each of two image placeholders](screenshots/ado-evidence-dry-run.png)
+
+The images in that sample are [api-call](../api-call/)'s own demo screenshots, which is the usual pairing: api-call produces the evidence, ado-evidence posts it. `screenshots/shoot.py` takes the image again from a clone.
+
 ## Use it
 
 Requirements: Python 3, and the Azure CLI signed in (`az login`), or `AZURE_DEVOPS_TOKEN` holding a token for Azure DevOps.

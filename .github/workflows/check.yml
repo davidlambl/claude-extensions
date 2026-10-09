@@ -1,0 +1,60 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The native installer puts the launcher at ~/.local/bin/claude.
+      # None of the steps below sign in: validate reads files, and plugin test
+      # needs no session, sign-in or network.
+      - name: Install Claude Code
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Version
+        run: claude --version
+
+      - name: Validate the marketplace
+        run: claude plugin validate . --strict
+
+      - name: Validate every plugin
+        run: |
+          for plugin in mods/context-bar skills/api-call skills/ado-evidence; do
+            echo "::group::$plugin"
+            claude plugin validate "$plugin" --strict
+            echo "::endgroup::"
+          done
+
+      - name: Every plugin the marketplace lists is validated above
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          listed = {p["source"] for p in json.load(open(".claude-plugin/marketplace.json"))["plugins"]}
+          checked = {"./mods/context-bar", "./skills/api-call", "./skills/ado-evidence"}
+          missing = listed - checked
+          if missing:
+              sys.exit("marketplace lists plugins this workflow does not validate: " + ", ".join(sorted(missing)))
+          print("all", len(listed), "listed plugins are validated")
+          PY
+
+      - name: Mod tests
+        run: claude plugin test mods/context-bar
+
+      - name: Skill tests
+        run: python3 -m unittest discover -s skills/api-call/tests -v

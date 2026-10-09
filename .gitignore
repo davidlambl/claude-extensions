@@ -4,3 +4,9 @@
 .DS_Store
 node_modules/
 __pycache__/
+
+# claude plugin eval writes a timestamped run into each suite
+**/evals/results/
+
+# the page a screenshot was captured from, rewritten on every run
+**/screenshots/*.html
