@@ -9,7 +9,7 @@ Uploads images as work item attachments and adds, or edits, a markdown comment t
 
 ## What it needs
 
-- Python 3, and the Azure CLI signed in (`az login`), or `AZURE_DEVOPS_TOKEN`.
+- Python 3, and the Azure CLI signed in (`az login`), or `AZURE_DEVOPS_TOKEN` holding either a Microsoft Entra access token or a personal access token. `post.py` tells them apart by shape: an Entra token is a JWT and goes as Bearer, and anything else goes as Basic with an empty user name.
 - The org as `https://dev.azure.com/<org>` or `https://<org>.visualstudio.com`, the project, the work item id, and the images, usually from the api-call skill.
 
 ## Post
@@ -23,7 +23,7 @@ Uploads images as work item attachments and adds, or edits, a markdown comment t
    ```
 
 3. Post only after the user approves that exact text: the same command without `--dry-run`. To revise a comment already posted, add `--edit <comment id>`; its earlier images stay attached, unreferenced.
-4. The script reads the comment back and checks that the text was stored, that each image renders and that each matches its file. Report those checks; exit 1 means one failed.
+4. The script reads the comment back and checks that the text was stored, that every uploaded image is drawn in the rendered comment, and that each matches its file. An image may appear more than once, or beside other images. It prints an `ok` or `FAIL` line for each check. Report those lines; exit 1 after them means a check failed. Exit 1 with no check lines means the script stopped on an error, shown as a message with no traceback. If it stopped after the comment was added, while reading it back, the message begins `comment N was posted`: fix that comment with `--edit N` rather than adding a second one. Whatever the message, look at the work item before running the script again.
 
 ## Rules
 

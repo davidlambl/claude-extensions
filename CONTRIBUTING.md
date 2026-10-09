@@ -63,15 +63,24 @@ Claude Code keeps each install on its cached copy until the `version` in `plugin
 
 ## Checks
 
-[`.github/workflows/check.yml`](.github/workflows/check.yml) runs on every push and pull request: strict validation of the marketplace and each plugin, the mod's tests, and the skills' unit tests. None of it signs in, because `claude plugin validate` only reads files and `claude plugin test` needs no session, sign-in or network. A step also fails the build if the marketplace lists a plugin the workflow doesn't validate, so a new extension can't slip past the checks.
+[`.github/workflows/check.yml`](.github/workflows/check.yml) runs on every push to `main`, on every pull request, and when started by hand from the Actions tab. A push to another branch runs nothing until it has a pull request. It runs:
+
+- strict validation of the marketplace and of every plugin it lists;
+- a parse of every Python script and every PowerShell script in the repository, including the ones no test imports;
+- every `tests/` folder under `mods/` and `skills/`: `claude plugin test` for one holding `*.test.ts`, `python3 -m unittest discover` for one holding `test*.py`, with `API_CALL_E2E=1` so the tests that call the network run too;
+- `tools/evals-lint.py`, which checks that every eval suite would load, without running it.
+
+The plugins come from `marketplace.json` and the test folders from what is on disk, so there is no second list to keep in step. A step fails the build if a folder holding a `.claude-plugin/plugin.json` is not listed in the marketplace, or a listed plugin has no such folder, and a `tests/` folder holding nothing the workflow knows how to run fails rather than being skipped. Nothing signs in: `claude plugin validate` only reads files, `claude plugin test` needs no session, sign-in or network, and the network tests send fake secrets to public echo services such as postman-echo.com and httpbin.org.
 
 Run the same things locally before you push:
 
 ```sh
 claude plugin validate . --strict
 claude plugin validate <mods|skills>/<name> --strict
-claude plugin test mods/context-bar
-python3 -m unittest discover -s skills/api-call/tests
+claude plugin test mods/<name>                                  # a mod's tests/*.test.ts
+API_CALL_E2E=1 python3 -m unittest discover -s skills/<name>/tests   # a skill's tests; drop API_CALL_E2E to stay offline
+git ls-files -z '*.py' | xargs -0 python3 -m py_compile         # every Python script parses
+python3 tools/evals-lint.py                                     # every eval suite would load
 ```
 
 ## Evals
@@ -89,6 +98,8 @@ claude plugin eval skills/ado-evidence --case post-the-evidence --runs 1 --ablat
 ```
 
 That cost is why the evals are not in the CI workflow, which would also need a credential the repository doesn't have. Run them by hand when you change a skill's description or its rules.
+
+Checking that a suite would load costs nothing, and CI does it: `python3 tools/evals-lint.py` reads every case as the loader would and fails on an unknown grader type or option, a missing option, a value out of range, or a `pattern` or `input_match` that does not compile as a JavaScript regex. A grader can also carry examples, in `<case>/examples/<grader>.json`, which the lint checks with node: for a `regex` grader `{"pass": [...], "fail": [...]}`, replies it must pass and must fail; for a `tool_used` grader `{"match": [...], "no_match": [...]}`, tool inputs its `input_match` must and must not match. Write some whenever you write or change a regex; a pattern that vetoes a correct reply fails a whole run.
 
 When a case fails, read the grader's evidence in `evals/results/<timestamp>/aggregate-result.json` before you change the skill. A judge grader can mark a correct answer wrong because the reply is shaped differently from the rubric, and the first failure here was exactly that. Results are gitignored.
 

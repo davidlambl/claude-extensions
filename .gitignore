@@ -10,3 +10,5 @@ __pycache__/
 
 # the page a screenshot was captured from, rewritten on every run
 **/screenshots/*.html
+# the records api-call's demo commands write beside the images
+skills/api-call/screenshots/api-call-*.json

@@ -12,6 +12,10 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # The skills' network tests run here: they call postman-echo.com and httpbin.org with fake secrets.
+      API_CALL_E2E: "1"
     steps:
       - uses: actions/checkout@v7
 
@@ -20,41 +24,97 @@ jobs:
           python-version: "3.12"
 
       # The native installer puts the launcher at ~/.local/bin/claude.
-      # None of the steps below sign in: validate reads files, and plugin test
-      # needs no session, sign-in or network.
+      # Nothing below signs in: validate reads files, plugin test needs no session, sign-in or network,
+      # and the network tests send fake secrets to public echo services.
       - name: Install Claude Code
         run: |
           curl -fsSL https://claude.ai/install.sh | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - name: Version
-        run: claude --version
+      - name: Versions
+        run: |
+          claude --version
+          python3 --version
+          pwsh --version
+          node --version
+
+      # Every step below takes its plugins from marketplace.json or from the folders on disk; there is no
+      # second list to fall out of step. This one fails if the two disagree.
+      - name: Every plugin folder is listed in the marketplace, and every listed plugin exists
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          listed = [p["source"] for p in json.load(open(".claude-plugin/marketplace.json"))["plugins"]]
+          on_disk = {"./" + m.parent.parent.as_posix() for m in Path(".").glob("*/*/.claude-plugin/plugin.json")}
+          problems = [f"{s} is listed in marketplace.json but has no .claude-plugin/plugin.json" for s in listed if s not in on_disk]
+          problems += [f"{s} is a plugin folder that marketplace.json does not list" for s in sorted(on_disk - set(listed))]
+          if problems:
+              sys.exit("\n".join(problems))
+          Path(os.environ["RUNNER_TEMP"], "plugins").write_text("".join(s + "\n" for s in listed))
+          print(f"{len(listed)} plugins listed, each with its folder:", ", ".join(listed))
+          PY
 
       - name: Validate the marketplace
         run: claude plugin validate . --strict
 
-      - name: Validate every plugin
+      - name: Validate every listed plugin
         run: |
-          for plugin in mods/context-bar skills/api-call skills/ado-evidence; do
+          while IFS= read -r plugin <&3; do
             echo "::group::$plugin"
             claude plugin validate "$plugin" --strict
             echo "::endgroup::"
-          done
+          done 3< "$RUNNER_TEMP/plugins"
 
-      - name: Every plugin the marketplace lists is validated above
+      # The tests import only some scripts, so every script is parsed here, the rest included.
+      - name: Parse every Python script
+        run: git ls-files -z '*.py' | xargs -0 --no-run-if-empty python3 -m py_compile
+
+      - name: Parse every PowerShell script
         run: |
-          python3 - <<'PY'
-          import json, sys
-          listed = {p["source"] for p in json.load(open(".claude-plugin/marketplace.json"))["plugins"]}
-          checked = {"./mods/context-bar", "./skills/api-call", "./skills/ado-evidence"}
-          missing = listed - checked
-          if missing:
-              sys.exit("marketplace lists plugins this workflow does not validate: " + ", ".join(sorted(missing)))
-          print("all", len(listed), "listed plugins are validated")
-          PY
+          pwsh -NoProfile -NonInteractive -Command '
+            $ErrorActionPreference = "Stop"
+            $failed = $false
+            foreach ($f in @(git ls-files "*.ps1")) {
+              $tokens = $null; $errors = $null
+              [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $f), [ref]$tokens, [ref]$errors)
+              foreach ($e in $errors) {
+                "::error file=$f,line=$($e.Extent.StartLineNumber),col=$($e.Extent.StartColumnNumber)::$($e.Message)"
+                $failed = $true
+              }
+              if (-not $errors) { "parsed $f" }
+            }
+            if ($failed) { exit 1 }'
 
-      - name: Mod tests
-        run: claude plugin test mods/context-bar
+      # Every tests/ folder of a mod or a skill runs, by what it holds: *.test.ts under claude plugin test,
+      # test*.py under unittest. A tests/ folder holding neither fails, rather than being skipped.
+      - name: Tests
+        run: |
+          shopt -s nullglob
+          status=0
+          for tests in mods/*/tests skills/*/tests; do
+            plugin="${tests%/tests}"
+            ts=("$tests"/*.test.ts "$tests"/*.test.tsx)
+            py=("$tests"/test*.py)
+            if ((${#ts[@]} == 0 && ${#py[@]} == 0)); then
+              echo "::error::$tests holds no *.test.ts or test*.py, so nothing here would run it"
+              status=1
+            fi
+            if ((${#ts[@]})); then
+              echo "::group::claude plugin test $plugin"
+              claude plugin test "$plugin" || { echo "::error::claude plugin test $plugin failed"; status=1; }
+              echo "::endgroup::"
+            fi
+            if ((${#py[@]})); then
+              echo "::group::unittest $tests"
+              python3 -m unittest discover -s "$tests" -v || { echo "::error::unittest $tests failed"; status=1; }
+              echo "::endgroup::"
+            fi
+          done
+          exit $status
 
-      - name: Skill tests
-        run: python3 -m unittest discover -s skills/api-call/tests -v
+      # Running the evals bills a model, so it stays out of CI; checking that they would load costs nothing.
+      - name: Lint the eval suites
+        run: |
+          python3 tools/evals-lint.py
+          python3 tools/evals-lint.py --self-test

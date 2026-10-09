@@ -5,7 +5,7 @@ description: Call an HTTP API the way the team's Insomnia or Postman collection 
 
 # API call
 
-Sends one GET through the user's own collection tool setup and writes a record of the exchange, and an image of it when asked. The scripts are in `scripts/` under this skill's base directory; `call.py` is the entry point.
+Sends one GET (two with `--warm`, the first untimed) through the user's own collection tool setup and writes a record of the exchange, and an image of it when asked. The scripts are in `scripts/` under this skill's base directory; `call.py` is the entry point.
 
 ## What it needs
 
@@ -24,11 +24,14 @@ python3 <base>/scripts/call.py --via insomnia --env "API - Test" --collection "A
 - `--expect` is the status the step should return. A mismatch exits 3; the record and the image are still written. Report a mismatch as a finding; never retake until it passes. A redirect is recorded as its 3xx, never followed.
 - `--warm` sends once untimed first, so a cold start after a deploy does not show in the timing.
 - `--label` leads the image's title, such as `"After: Test (this change)"`. For a before-and-after pair, run the step twice, once per environment, with a label for each.
+- In Git Bash on Windows, which is also the shell Claude Code's Bash tool uses there, put `MSYS_NO_PATHCONV=1` in front of the command, or write the path with a doubled leading slash, as `GET //api/widgets/42`, which `call.py` reads as `/api/widgets/42`. Otherwise Git Bash turns `/api/widgets/42` into a Windows path such as `C:/Program Files/Git/api/widgets/42` before `call.py` starts, and `call.py` stops with exit 1 rather than send it.
 - Only GET. Anything else is the user's to run.
 
 ## What comes out
 
 `<dir>/<name>.json` is the record: the source, environment and collection, the method and path, the URL and request headers as sent with every secret as `********`, the client certificate's file name, the status, how long it took, when it was sent, the response headers and the body. With `--shot`, `<dir>/<name>.png` draws the same, and the `.html` it was captured from sits beside it. The script prints one line of JSON with the status, the verdict and the file paths.
+
+The record is written before the screenshot is taken. If the screenshot fails, `<name>.json` is still written, without `png`, and the script exits 1 with a message naming the record and the status.
 
 Look at every image before using it: the body is drawn as returned, so check it holds nothing that should not be shared.
 
