@@ -1,7 +1,10 @@
 {
   "name": "context-bar",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Your context window as a meter above the prompt: the conversation, the overhead every request carries, and the room left before compaction, with a drill-down into the overhead. Toggle it with /context-bar.",
   "author": { "name": "David Lambl" },
+  "homepage": "https://github.com/davidlambl/claude-extensions/tree/main/mods/context-bar",
+  "repository": "https://github.com/davidlambl/claude-extensions",
+  "keywords": ["context", "tokens", "compaction", "status", "ui"],
   "types": "./types/index.d.ts"
 }

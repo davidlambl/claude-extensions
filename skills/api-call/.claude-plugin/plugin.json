@@ -1,6 +1,9 @@
 {
   "name": "api-call",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Calls an API the way your Insomnia or Postman collection would, with its environment, auth and client certificate, records the exchange as JSON with every secret masked, and screenshots it on request.",
-  "author": { "name": "David Lambl" }
+  "author": { "name": "David Lambl" },
+  "homepage": "https://github.com/davidlambl/claude-extensions/tree/main/skills/api-call",
+  "repository": "https://github.com/davidlambl/claude-extensions",
+  "keywords": ["api", "http", "insomnia", "postman", "testing", "screenshots"]
 }

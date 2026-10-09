@@ -6,17 +6,23 @@
     {
       "name": "context-bar",
       "source": "./mods/context-bar",
-      "description": "Your context window as a meter above the prompt: the conversation, the overhead every request carries, and the room left before compaction, with a drill-down into the overhead. Toggle it with /context-bar."
+      "description": "Your context window as a meter above the prompt: the conversation, the overhead every request carries, and the room left before compaction, with a drill-down into the overhead. Toggle it with /context-bar.",
+      "category": "mod",
+      "tags": ["context", "tokens", "compaction", "status", "ui"]
     },
     {
       "name": "api-call",
       "source": "./skills/api-call",
-      "description": "Calls an API the way your Insomnia or Postman collection would, with its environment, auth and client certificate, records the exchange as JSON with every secret masked, and screenshots it on request."
+      "description": "Calls an API the way your Insomnia or Postman collection would, with its environment, auth and client certificate, records the exchange as JSON with every secret masked, and screenshots it on request.",
+      "category": "skill",
+      "tags": ["api", "http", "insomnia", "postman", "testing", "screenshots"]
     },
     {
       "name": "ado-evidence",
       "source": "./skills/ado-evidence",
-      "description": "Posts images with captions as a markdown comment on an Azure DevOps work item, or revises one already posted, and checks that every image rendered."
+      "description": "Posts images with captions as a markdown comment on an Azure DevOps work item, or revises one already posted, and checks that every image rendered.",
+      "category": "skill",
+      "tags": ["azure-devops", "work-items", "evidence", "screenshots", "testing"]
     }
   ]
 }
