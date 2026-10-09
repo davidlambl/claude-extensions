@@ -34,3 +34,7 @@ Then run `/reload-plugins`, or start a new session.
 ## Develop
 
 [CONTRIBUTING.md](CONTRIBUTING.md) has the layout of a mod and of a skill plugin, the commands that validate and test them, how an extension is listed in the marketplace, and how the screenshots are taken.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

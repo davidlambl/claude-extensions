@@ -1,9 +1,10 @@
 {
   "name": "ado-evidence",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Posts images with captions as a markdown comment on an Azure DevOps work item, or revises one already posted, and checks that every image rendered.",
   "author": { "name": "David Lambl" },
   "homepage": "https://github.com/davidlambl/claude-extensions/tree/main/skills/ado-evidence",
   "repository": "https://github.com/davidlambl/claude-extensions",
+  "license": "MIT",
   "keywords": ["azure-devops", "work-items", "evidence", "screenshots", "testing"]
 }
