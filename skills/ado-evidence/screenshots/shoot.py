@@ -20,7 +20,7 @@ IMAGES = PLUGIN.parent / "api-call/screenshots"
 FRAME = PLUGIN.parent / "api-call/skills/api-call/scripts/frame.html"
 PNG = HERE / "ado-evidence-dry-run.png"
 ORG, PROJECT, WORK_ITEM = "https://dev.azure.com/contoso", "Widgets", "70012"
-TITLE_BAR, PADDING, ROW = 37, 22, 20  # pixels, as api-call's render.py counts them
+PADDING, ROW = 22, 20  # pixels, as api-call's render.py counts them; the demo draws no title bar
 
 
 def chrome():
@@ -75,15 +75,14 @@ def main():
     colors = {"cmd": "color:#74bdf5;font-weight:700"}
     body = "\n".join(f'<span style="{colors[c]}">{html.escape(t)}</span>' if c else html.escape(t) for c, t in rows)
     # One pass, so a {{body}} inside the title is not filled with the body.
-    # The look follows the system this runs on, as api-call's render.py picks it.
-    look = "windows" if sys.platform.startswith("win") or sys.platform == "cygwin" else "mac" if sys.platform == "darwin" else "linux"
-    fill = {"title": html.escape(f"ado-evidence - preview for work item {WORK_ITEM}"), "body": body, "look": look}
+    # No title bar, as api-call draws its screenshots by default: the terminal's content alone.
+    fill = {"title": html.escape(f"ado-evidence - preview for work item {WORK_ITEM}"), "body": body, "look": "none"}
     page = re.sub(r"\{\{(title|body|look)\}\}", lambda m: fill[m.group(1)], FRAME.read_text(encoding="utf-8"))
     page_file = PNG.with_suffix(".html")
     page_file.write_text(page, encoding="utf-8")
 
     width = min(1600, max(720, round(max(len(t) for _, t in rows) * 9.2) + 60))
-    height = TITLE_BAR + PADDING + len(rows) * ROW
+    height = PADDING + len(rows) * ROW
     if PNG.exists():
         PNG.unlink()
     subprocess.run([chrome(), "--headless=new", "--disable-gpu", "--hide-scrollbars",

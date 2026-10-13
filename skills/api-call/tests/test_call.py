@@ -182,13 +182,16 @@ class CallPy(unittest.TestCase):
         self.assertFalse((self.out / "step.png").exists())
 
     def test_frame_reaches_the_page(self):
-        for look in ("windows", "linux", "mac"):
-            with self.subTest(look=look):
-                proc = self.call(RECORD, "--shot", "--frame", look)
+        native = {"darwin": "mac"}.get(sys.platform, "windows" if sys.platform.startswith("win") or sys.platform == "cygwin" else "linux")
+        for flags, look in (((), "none"), (("--frame", "none"), "none"), (("--frame", "native"), native),
+                            (("--frame", "windows"), "windows"), (("--frame", "linux"), "linux"), (("--frame", "mac"), "mac")):
+            with self.subTest(flags=flags):
+                proc = self.call(RECORD, "--shot", *flags)
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertIn(f'<div class="window {look}">', (self.out / "step.html").read_text(encoding="utf-8"))
-        proc = self.call(RECORD, "--shot", "--frame", "beos")
-        self.assertEqual(proc.returncode, 2, proc.stderr)  # argparse refuses an unknown frame
+        for bad in ("beos", "auto"):
+            proc = self.call(RECORD, "--shot", "--frame", bad)
+            self.assertEqual(proc.returncode, 2, proc.stderr)  # argparse refuses an unknown frame
 
     def test_a_screenshot_is_added_to_the_record(self):
         proc = self.call(RECORD, "--expect", "200", "--shot", "--label", "After: Test")

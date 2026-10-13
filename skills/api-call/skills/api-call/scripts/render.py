@@ -1,7 +1,7 @@
 """Draws an api-call record in the terminal window frame and captures it with headless Chrome.
 
 Usage:
-  python3 render.py RECORD.json [--out FILE.png] [--title TEXT] [--frame auto|mac|windows|linux]
+  python3 render.py RECORD.json [--out FILE.png] [--title TEXT] [--frame none|native|mac|windows|linux]
 
 Writes the image and, beside it, the .html page it was captured from; the default name is the record's with .png.
 The frame is frame.html next to this script, which tools/screenshots in this repository shares.
@@ -15,7 +15,7 @@ FRAME = HERE / "frame.html"
 TITLE_BAR, PADDING, ROW = 37, 22, 20  # pixels: what a capture's height is made of
 CELL, MARGIN, MIN_WIDTH, MAX_WIDTH = 9.2, 60, 720, 1600  # pixels: a monospace cell, and what a capture's width is made of
 WIDTH, LINES = 150, 40  # cells a row is cut to, and lines a body is cut to
-COLORS = {"dim": "color:#a1a1aa", "req": "color:#74bdf5;font-weight:700",
+COLORS = {"head": "color:#e4e4e7;font-weight:700", "dim": "color:#a1a1aa", "req": "color:#74bdf5;font-weight:700",
           "ok": "color:#98c379;font-weight:700", "bad": "color:#ef7b85;font-weight:700"}
 
 # A JSON text's tokens as RFC 8259 writes them, and the whitespace it allows between them. NaN, Infinity and -Infinity
@@ -34,7 +34,8 @@ IGNORABLE = ((0x034F, 0x034F), (0x115F, 0x1160), (0x17B4, 0x17B5), (0x180B, 0x18
 BLANK = "\u2800"  # the Braille pattern with no dots: a symbol (So) that draws as a space
 OBJECT = "\ufffc"  # the object replacement character: a symbol (So) that many fonts draw as a space
 PLACEHOLDER = re.compile(r"\{\{(title|body|look)\}\}")  # what page() fills in frame.html
-LOOKS = ("mac", "windows", "linux")  # the window frames frame.html draws
+LOOKS = ("mac", "windows", "linux")  # the title bars frame.html draws
+FRAMES = ("none", "native") + LOOKS  # what --frame takes: no title bar (the default), this system's, or a named one
 
 
 class Problem(Exception):
@@ -266,10 +267,16 @@ def rows(r):
     return [(c, clip(visible(t, WIDTH))) for c, t in out]
 
 
-def size(drawn):
-    """The window's (width, height) in pixels for the rows drawn: a cell per display cell of the widest row, plus the margins."""
+def bar(look):
+    """The title bar's height in pixels for a look: none draws no bar."""
+    return 0 if look == "none" else TITLE_BAR
+
+
+def size(drawn, look="none"):
+    """The window's (width, height) in pixels for the rows drawn: a cell per display cell of the widest row, plus the
+    margins, and the title bar the look draws."""
     width = min(MAX_WIDTH, max(MIN_WIDTH, round(max(cells(t) for _, t in drawn) * CELL) + MARGIN))
-    return width, TITLE_BAR + PADDING + len(drawn) * ROW
+    return width, bar(look) + PADDING + len(drawn) * ROW
 
 
 def title_for(r):
@@ -287,15 +294,28 @@ def markup(drawn):
 
 
 def look_for(frame=None):
-    """The window frame to draw: mac, windows or linux. auto, or none given, is the system this runs on, so a capture
-    taken on Windows looks like a Windows window."""
-    if frame in (None, "auto"):
+    """The look to draw for a --frame value: none (the default, no title bar, only the terminal's content), native (the
+    title bar of the system this runs on), or mac, windows or linux by name."""
+    if frame in (None, "none"):
+        return "none"
+    if frame == "native":
         if sys.platform.startswith("win") or sys.platform == "cygwin":
             return "windows"
         return "mac" if sys.platform == "darwin" else "linux"
     if frame not in LOOKS:
-        raise Problem(f"the frame must be auto, {', '.join(LOOKS)}, not {frame!r}")
+        raise Problem(f"the frame must be one of {', '.join(FRAMES)}, not {frame!r}")
     return frame
+
+
+def drawn_rows(r, title=None, look="none"):
+    """The rows the image draws. With no title bar to carry it, a title given here or a label given with call.py's
+    --label opens the image as a line of its own; the default label, the environment's name, is shown below already."""
+    drawn = rows(r)
+    label = r.get("label")
+    heading = title or (label if label and label != r.get("environment") else None)
+    if look == "none" and heading:
+        drawn = [("head", clip(visible(heading, WIDTH)))] + drawn
+    return drawn
 
 
 def page(title, body, frame=None):
@@ -311,13 +331,14 @@ def render(r, png, title=None, frame=None):
     png as an absolute path.
     Raises Problem when no browser is found or the browser does not deliver the image."""
     png = Path(png).resolve()  # the page is given to the browser as a file URI, which only an absolute path has
-    drawn = rows(r)
+    look = look_for(frame)
+    drawn = drawn_rows(r, title, look)
     body = markup(drawn)
     page_file = png.with_suffix(".html")
     # Encoded before the file is opened, so a character UTF-8 cannot hold never leaves the page cut short; visible()
     # has shown every lone surrogate already, and backslashreplace would write one the same way.
-    page_file.write_bytes(page(title or title_for(r), body, frame).encode("utf-8", "backslashreplace"))
-    width, height = size(drawn)
+    page_file.write_bytes(page(title or title_for(r), body, look).encode("utf-8", "backslashreplace"))
+    width, height = size(drawn, look)
     if png.exists():
         png.unlink()
     try:
@@ -340,8 +361,8 @@ def main():
     p.add_argument("record")
     p.add_argument("--out")
     p.add_argument("--title")
-    p.add_argument("--frame", choices=("auto",) + LOOKS, default="auto",
-                   help="the window frame: auto (the system this runs on), mac, windows or linux")
+    p.add_argument("--frame", choices=FRAMES, default="none",
+                   help="the title bar: none (the default), native (this system's), or mac, windows or linux")
     args = p.parse_args()
     record = Path(args.record)
     r = json.loads(record.read_text(encoding="utf-8"))

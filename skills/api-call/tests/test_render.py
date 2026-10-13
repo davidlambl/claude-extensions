@@ -131,7 +131,7 @@ class DisplayWidth(unittest.TestCase):
             # 60 characters by len(), 120 cells: not clipped, and twice as wide as len() would make it.
             rows = render.rows({**RECORD, "body": "日" * 60})
             _, browser = drawn({**RECORD, "body": "日" * 60}, Path(tmp) / "cjk.png")
-            self.assertEqual(browser.window(), (round(120 * 9.2) + 60, 37 + 22 + len(rows) * 20))
+            self.assertEqual(browser.window(), (round(120 * 9.2) + 60, 22 + len(rows) * 20))  # no title bar by default
             _, browser = drawn(RECORD, Path(tmp) / "plain.png")
             self.assertEqual(browser.window()[0], 720)
             _, browser = drawn({**RECORD, "body": "日" * 200}, Path(tmp) / "wide.png")
@@ -525,7 +525,7 @@ class Round3Driver(unittest.TestCase):
             page = (Path(tmp) / "r.html").read_text(encoding="utf-8")
         self.assertIn('<div class="title">E2E {{body}} - GET /repos/x/y/languages</div>', page)
         self.assertEqual(page.count("the body {{title}}"), 1)
-        self.assertEqual(page.count('class="row"'), len(render.rows(record)))
+        self.assertEqual(page.count('class="row"'), len(render.drawn_rows(record)))  # the label opens the image
 
     def test_driver_each_row_is_a_block_of_its_own(self):
         self.assertEqual(render.markup([("dim", "a <b>"), (None, ""), ("bad", "x & y")]),
@@ -662,28 +662,49 @@ MEASURE = """<script>(() => {
 
 
 class WindowFrame(unittest.TestCase):
-    """The capture's window frame follows the system it is taken on, unless --frame names one: a screenshot taken on
-    Windows used to draw the macOS frame, traffic-light dots and all."""
+    """--frame: by default no title bar, only the terminal's content; native draws the title bar of the system the
+    capture is taken on; mac, windows or linux name one. A screenshot taken on Windows used to draw the macOS frame."""
 
-    def test_auto_follows_the_system(self):
+    def test_no_title_bar_unless_asked(self):
+        self.assertEqual(render.look_for(), "none")
+        self.assertEqual(render.look_for("none"), "none")
+
+    def test_native_follows_the_system(self):
         for platform, look in (("win32", "windows"), ("cygwin", "windows"), ("darwin", "mac"), ("linux", "linux")):
             with self.subTest(platform=platform), patch.object(render.sys, "platform", platform):
-                self.assertEqual(render.look_for(), look)
-                self.assertEqual(render.look_for("auto"), look)
+                self.assertEqual(render.look_for("native"), look)
 
     def test_a_named_frame_is_used_and_an_unknown_one_refused(self):
         for look in render.LOOKS:
             self.assertEqual(render.look_for(look), look)
-        with self.assertRaises(render.Problem):
-            render.look_for("beos")
+        for bad in ("beos", "auto", ""):
+            with self.subTest(bad=bad), self.assertRaises(render.Problem):
+                render.look_for(bad)
 
     def test_each_look_fills_the_frame(self):
-        for look in render.LOOKS:
+        for look in ("none",) + render.LOOKS:
             with self.subTest(look=look):
                 page = render.page("A {{look}} title", "<span>body</span>", look)
                 self.assertIn(f'<div class="window {look}">', page)
                 self.assertIn("A {{look}} title", page)  # a placeholder in the title is drawn as text
                 self.assertEqual(page.count("{{"), 1)
+
+    def test_only_a_title_bar_adds_to_the_height(self):
+        drawn = render.rows(RECORD)
+        self.assertEqual(render.size(drawn, "none")[1], render.PADDING + len(drawn) * render.ROW)
+        for look in render.LOOKS:
+            self.assertEqual(render.size(drawn, look)[1], render.TITLE_BAR + render.PADDING + len(drawn) * render.ROW)
+
+    def test_with_no_title_bar_a_label_or_title_opens_the_image(self):
+        plain = render.rows(RECORD)
+        labelled = {**RECORD, "label": "Before: Prod (current release)"}
+        self.assertEqual(render.drawn_rows(labelled), [("head", "Before: Prod (current release)")] + plain)
+        self.assertEqual(render.drawn_rows(RECORD, "A title of my own")[0], ("head", "A title of my own"))
+        # the default label is the environment's name, which the image shows already
+        self.assertEqual(render.drawn_rows({**RECORD, "label": RECORD["environment"]}), plain)
+        self.assertEqual(render.drawn_rows(RECORD), plain)
+        # with a title bar, the label is the bar's title and not a line
+        self.assertEqual(render.drawn_rows(labelled, look="mac"), plain)
 
 class InTheBrowser(unittest.TestCase):
     """Round 3: what the browser draws from the page render() writes, checked in the real browser, since only it can
@@ -733,12 +754,12 @@ class InTheBrowser(unittest.TestCase):
         return laid
 
     def test_each_frame_keeps_the_bar_height_and_places_its_title(self):
-        # Every look's bar is 37px, so the rows sit where size() counts them; the Windows title starts at the left, as
-        # Windows draws it, and the macOS and Linux titles are centred.
+        # A title bar is 37px in every look and none has no bar, so the rows sit where size() counts them. The Windows
+        # title starts at the left, as Windows draws it; the macOS and Linux titles are centred.
         title = "Frame check - GET /x"
+        record = {**RECORD, "label": "Frame check", "path": "/x"}
         for look in render.LOOKS:
             with self.subTest(look=look):
-                record = {**RECORD, "label": "Frame check", "path": "/x"}
                 laid = self.measure(record, f"frame-{look}", [title], look)
                 self.assertEqual(laid["rows"][0]["top"], render.TITLE_BAR + 10)
                 left = laid["at"][title]["lefts"][0]
@@ -746,6 +767,9 @@ class InTheBrowser(unittest.TestCase):
                     self.assertLess(left, 40)
                 else:
                     self.assertGreater(left, 80)
+        laid = self.measure(record, "frame-none", [], "none")
+        self.assertEqual(laid["rows"][0]["top"], 10)
+        self.assertEqual(laid["rows"][0]["text"], "Frame check")
 
     def test_driver_each_row_is_a_clipped_block_of_one_row(self):
         record = {**RECORD, "body": WIDE_LINES[0] + "\nnext"}
@@ -755,7 +779,7 @@ class InTheBrowser(unittest.TestCase):
             with self.subTest(row=i):
                 self.assertEqual(row["text"], text)
                 self.assertEqual(row["display"], "block")
-                self.assertEqual((row["top"], row["height"]), (render.TITLE_BAR + 10 + i * render.ROW, render.ROW))
+                self.assertEqual((row["top"], row["height"]), (render.bar("none") + 10 + i * render.ROW, render.ROW))
                 self.assertEqual((row["overflowX"], row["overflowY"], row["textOverflow"]), ("hidden", "hidden", "ellipsis"))
                 self.assertEqual((row["bidi"], row["direction"]), ("bidi-override", "ltr"))
                 self.assertLessEqual(row["right"], laid["width"] - 18)  # inside the window and its padding
@@ -781,7 +805,7 @@ class InTheBrowser(unittest.TestCase):
                    "\u0627\u0644\u0639\u062f\u062f \u0661\u0662\u0663 = 123", "\u05d1\u05d3\u05d9\u05e7\u05d4 1 2 - GET"]
         record = {**RECORD, "label": "\u05d1\u05d3\u05d9\u05e7\u05d4 1 2", "body": '{"\u05d0": 1, "amount": "\u05d1 100 200"}',
                   "response_headers": {"X-Note": targets[2], "X-Arabic": targets[3]}}
-        laid = self.measure(record, "bidi", targets)
+        laid = self.measure(record, "bidi", targets, "mac")  # a title bar, so the title is drawn and checked too
         for target in targets:
             with self.subTest(target=target):
                 lefts = laid["at"][target]["lefts"]
@@ -796,7 +820,7 @@ class InTheBrowser(unittest.TestCase):
         (tall_png, tall_size), (flat_png, flat_size) = self.shoot(tall, "tall"), self.shoot(flat, "flat")
         self.assertEqual(tall_size, flat_size)
         a, b = png_rows(tall_png.read_bytes()), png_rows(flat_png.read_bytes())
-        top = render.TITLE_BAR + 10 + k * render.ROW
+        top = render.bar("none") + 10 + k * render.ROW
         self.assertEqual([y for y in range(len(a)) if not top <= y < top + render.ROW and a[y] != b[y]], [])
         self.assertNotEqual(a[top:top + render.ROW], b[top:top + render.ROW])  # the marks are drawn, in their row
 

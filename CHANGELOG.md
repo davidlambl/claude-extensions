@@ -34,6 +34,11 @@ To take a new version: `claude plugin marketplace update davidlambl`, then `clau
 
 Replaces api-shots, which was published briefly at 0.1.0 and 0.1.1 and did the same job for Insomnia only, with Azure DevOps posting built in. The posting half is now [ado-evidence](skills/ado-evidence/).
 
+### 0.2.8 — 2026-10-13
+
+- A screenshot has no title bar by default, only the terminal's content, so it no longer looks like a window from any one system. A label given with `--label` opens the image as its first line instead.
+- `--frame native` draws the title bar of the system the capture is taken on, and `--frame windows`, `mac` or `linux` draws that one. `--frame auto`, from 0.2.7, is gone: `native` does what it did.
+
 ### 0.2.7 — 2026-10-13
 
 - A screenshot's window frame looks like the system it is taken on: a Windows window on Windows, a macOS window on a Mac, a GNOME window on Linux. It was always the macOS frame. `--frame windows`, `mac` or `linux` picks another, on `call.py` and `render.py`.
@@ -149,6 +154,10 @@ In the docs:
 ## ado-evidence
 
 Split out of api-shots, so that where the records and images go is the user's choice.
+
+### 0.1.6 — 2026-10-13
+
+- The demo screenshot has no title bar, as api-call's screenshots have by default.
 
 ### 0.1.5 — 2026-10-13
 
