@@ -654,7 +654,7 @@ MEASURE = """<script>(() => {
     }
     return null
   }
-  const out = { width: innerWidth, rows: [...document.querySelectorAll('pre > *')].map(style),
+  const out = { width: Math.round(document.documentElement.getBoundingClientRect().width), rows: [...document.querySelectorAll('pre > *')].map(style),
                 at: Object.fromEntries(TARGETS.map(t => [t, at(t)])) }
   document.body.setAttribute('data-measured', btoa(unescape(encodeURIComponent(JSON.stringify(out)))))
 })()</script>"""
@@ -740,10 +740,14 @@ class InTheBrowser(unittest.TestCase):
         return png, tuple(int(n) for n in size.split(","))
 
     def measure(self, record, name, targets=(), frame=None):
-        """The layout the browser makes of the page render.render writes for record, at the window size it captures."""
+        """The layout the browser makes of the page render.render writes for record, at the width it captures it.
+        The page is laid out at that width by its own style, not by the window: Chrome 154's headless --dump-dom on
+        Windows gives a page a viewport 26px narrower and 134px shorter than --window-size, though its --screenshot of
+        the same page is the full size, so the window alone would measure a layout no capture uses."""
         png, (width, height) = self.shoot(record, name, frame)
         page = png.with_name(f"{name}-measured.html")
-        page.write_bytes(png.with_suffix(".html").read_bytes() + MEASURE.replace("TARGETS", json.dumps(list(targets))).encode())
+        fixed = f"<style>html{{width:{width}px!important;min-width:{width}px!important}}</style>".encode()
+        page.write_bytes(png.with_suffix(".html").read_bytes() + fixed + MEASURE.replace("TARGETS", json.dumps(list(targets))).encode())
         proc = subprocess.run([self.browser, "--headless=new", "--disable-gpu", "--hide-scrollbars",
                                f"--window-size={width},{height}", "--dump-dom", page.as_uri()],
                               capture_output=True, timeout=90)

@@ -34,6 +34,11 @@ To take a new version: `claude plugin marketplace update davidlambl`, then `clau
 
 Replaces api-shots, which was published briefly at 0.1.0 and 0.1.1 and did the same job for Insomnia only, with Azure DevOps posting built in. The posting half is now [ado-evidence](skills/ado-evidence/).
 
+### 0.2.9 — 2026-10-13
+
+- The Insomnia source says when its data folder is missing, or holds no `insomnia.Workspace.db`, and how to point `INSOMNIA_DATA` at it. It used to report no matching collection. In Git Bash with `MSYS_NO_PATHCONV=1`, a `/c/Users/...` path is not converted, so write it as `C:/Users/...`.
+- The screenshot tests that measure the page in a real browser lay it out at the capture's width themselves. On Windows, Chrome 154's headless page dump gives the page a smaller viewport than its screenshots use, so eight of them failed there although the images were right.
+
 ### 0.2.8 — 2026-10-13
 
 - A screenshot has no title bar by default, only the terminal's content, so it no longer looks like a window from any one system. A label given with `--label` opens the image as its first line instead.

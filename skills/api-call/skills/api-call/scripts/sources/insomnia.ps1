@@ -206,6 +206,14 @@ if (-not $InsomniaDir) {
     elseif ($IsMacOS) { Join-Path $HOME 'Library/Application Support/Insomnia' }
     else { Join-Path $HOME '.config/Insomnia' }
 }
+# A folder that is not there, or is not Insomnia's, would otherwise read as one with no environments or collections.
+$hint = "set INSOMNIA_DATA to the folder that holds insomnia.Workspace.db (in Git Bash with MSYS_NO_PATHCONV=1, write it as C:/Users/..., since /c/Users/... is not converted)"
+if (-not (Test-Path -LiteralPath $InsomniaDir -PathType Container)) {
+    throw "there is no Insomnia data folder at '$InsomniaDir': $hint"
+}
+if (-not (Test-Path -LiteralPath (Join-Path $InsomniaDir 'insomnia.Workspace.db') -PathType Leaf)) {
+    throw "'$InsomniaDir' holds no insomnia.Workspace.db, so it is not Insomnia's data folder: $hint"
+}
 
 # A JSON value as dictionaries, arrays and plain values. System.Text.Json reads strings as strings: ConvertFrom-Json
 # on PowerShell 7.4 turns an ISO date in one into a DateTime, which then renders in another format and time zone. An

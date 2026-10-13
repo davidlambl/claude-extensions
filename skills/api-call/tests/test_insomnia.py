@@ -1074,6 +1074,26 @@ class BaseUrl(Case):
         self.assertEqual(r.record["auth"], "bearer token")
         self.assertEqual(r.record["request_headers"]["Authorization"], "Bearer ********")
 
+
+class DataFolder(Case):
+    """A data folder that is not there, or is not Insomnia's, says so: it read as one with no collections, which sent a
+    user who had given Git Bash an unconverted /c/Users/... path looking for a missing collection."""
+
+    def test_a_missing_or_wrong_data_folder_is_named(self):
+        self.data({"baseUrl": OFFLINE}, [])
+        missing = self.tmp / "no-such-folder"
+        r = self.call("/x", env={"INSOMNIA_DATA": str(missing)})
+        self.assertEqual(r.code, 1, r)
+        self.assertIn("there is no Insomnia data folder at", r.stderr)
+        self.assertIn("INSOMNIA_DATA", r.stderr)
+        empty = self.tmp / "empty"
+        empty.mkdir()
+        r = self.call("/x", env={"INSOMNIA_DATA": str(empty)})
+        self.assertEqual(r.code, 1, r)
+        self.assertIn("holds no insomnia.Workspace.db", r.stderr)
+        r = self.call("/x")  # the test's own data folder still works
+        self.assertNotIn("insomnia.Workspace.db", r.stderr)
+
 class CookieKey(Case):
     """Round 2, attack 35: an API key that cannot travel as one cookie is refused before anything is sent."""
 
