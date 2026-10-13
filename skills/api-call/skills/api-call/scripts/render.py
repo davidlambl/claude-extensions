@@ -18,11 +18,12 @@ WIDTH, LINES = 150, 40  # cells a row is cut to, and lines a body is cut to
 COLORS = {"dim": "color:#a1a1aa", "req": "color:#74bdf5;font-weight:700",
           "ok": "color:#98c379;font-weight:700", "bad": "color:#ef7b85;font-weight:700"}
 
-# A JSON text's tokens as RFC 8259 writes them, and the whitespace it allows between them.
+# A JSON text's tokens as RFC 8259 writes them, and the whitespace it allows between them. NaN, Infinity and -Infinity
+# are no JSON, but json.loads takes them and APIs written in Python send them, so a body holding them is laid out too.
 SPACE = re.compile(r"[ \t\n\r]*")
 STRING = re.compile(r'"[^"\\\x00-\x1f]*(?:\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})[^"\\\x00-\x1f]*)*"')
 NUMBER = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
-LITERAL = re.compile(r"true|false|null")
+LITERAL = re.compile(r"true|false|null|NaN|Infinity|-Infinity")
 
 # Every character but a tab and printable ASCII: the only ones hidden() has to look at.
 UNUSUAL = re.compile(r"[^\t\x20-\x7e]")
@@ -30,6 +31,8 @@ UNUSUAL = re.compile(r"[^\t\x20-\x7e]")
 # a browser draws nothing for them. The rest of the set is Cf or unassigned.
 IGNORABLE = ((0x034F, 0x034F), (0x115F, 0x1160), (0x17B4, 0x17B5), (0x180B, 0x180F), (0x3164, 0x3164),
              (0xFE00, 0xFE0F), (0xFFA0, 0xFFA0), (0xE0100, 0xE01EF))
+BLANK = "\u2800"  # the Braille pattern with no dots: a symbol (So) that draws as a space
+PLACEHOLDER = re.compile(r"\{\{(title|body)\}\}")  # what page() fills in frame.html
 
 
 class Problem(Exception):
@@ -108,14 +111,20 @@ def clip(line, width=WIDTH):
 
 
 def hidden(ch, before=""):
-    """Whether ch draws nothing or changes how the text around it draws, so the image shows its escape instead: a
-    control character (Cc, tab aside), a format character (Cf: zero-width space and joiners, soft hyphen, word joiner,
-    byte order mark, the bidi marks, overrides and isolates), a line or paragraph separator (Zl, Zp), a lone surrogate
-    (Cs), an unassigned code point (Cn, which a newer browser may know as one of these), or another default-ignorable
-    code point. A variation selector right after a symbol (So) stays, since it picks that visible symbol's text or
-    emoji form: U+26A0 then U+FE0F is the warning sign drawn as an emoji."""
-    if unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp", "Cs", "Cn"):
+    """Whether ch draws nothing, draws as a space it is not, or changes how the text around it draws, so the image
+    shows its escape instead: a control character (Cc, tab aside), a format character (Cf: zero-width space and
+    joiners, soft hyphen, word joiner, byte order mark, the bidi marks, overrides and isolates), a line or paragraph
+    separator (Zl, Zp), a lone surrogate (Cs), an unassigned code point (Cn, which a newer browser may know as one of
+    these), or another default-ignorable code point. A variation selector right after a symbol (So) stays, since it
+    picks that visible symbol's text or emoji form: U+26A0 then U+FE0F is the warning sign drawn as an emoji. A space
+    other than U+0020 (Zs: the no-break space, U+2000 to U+200A, U+202F, U+205F, the ideographic space U+3000 and the
+    rest) and the blank Braille pattern are shown as escapes too: each draws as an ordinary space, so two different
+    bodies would draw the same."""
+    category = unicodedata.category(ch)
+    if category in ("Cc", "Cf", "Zl", "Zp", "Cs", "Cn"):
         return ch != "\t"
+    if category == "Zs" or ch == BLANK:
+        return ch != " "
     cp = ord(ch)
     if any(lo <= cp <= hi for lo, hi in IGNORABLE):
         return not (ch in "\ufe0e\ufe0f" and before and unicodedata.category(before) == "So")
@@ -130,8 +139,10 @@ def escape(ch):
 
 def visible(text, width=None):
     """text as drawn: each character hidden() names as its escape, so nothing invisible can stand between two
-    characters of the image, and no bidi control can reorder what it draws. With width, stops once what it has made
-    is known to be wider than that many cells, which keeps a long line from the body cheap; clip() cuts there anyway."""
+    characters of the image, and no bidi control can reorder what it draws. A right-to-left letter stays as it is:
+    frame.html draws every row left to right in the order its characters are written. With width, stops once what it
+    has made is known to be wider than that many cells, which keeps a long line from the body cheap; clip() cuts there
+    anyway."""
     out, last, least = [], 0, 0
     for m in UNUSUAL.finditer(text):
         i = m.start()
@@ -152,11 +163,12 @@ def visible(text, width=None):
 
 
 def json_lines(text, keep=LINES + 1):
-    """A JSON text laid out as json.dumps(indent=2) lays it out, or None when text is not JSON (RFC 8259: no NaN,
-    no trailing comma). Only the whitespace between tokens changes: every string, number, true, false and null is
-    copied character for character, never decoded and written again, so an escape stays escaped and 1.2345678E7 stays
-    1.2345678E7, and the image draws the body as it was returned. Returns the first keep lines and how many there are
-    in all; past keep, lines are only counted. No recursion, so no nesting is too deep."""
+    """A JSON text laid out as json.dumps(indent=2) lays it out, or None when text is not JSON (RFC 8259: no trailing
+    comma, no single quotes; NaN, Infinity and -Infinity are taken as json.loads takes them). Only the whitespace
+    between tokens changes: every string, number, true, false, null, NaN and Infinity is copied character for
+    character, never decoded and written again, so an escape stays escaped and 1.2345678E7 stays 1.2345678E7, and the
+    image draws the body as it was returned. Returns the first keep lines and how many there are in all; past keep,
+    lines are only counted. No recursion, so no nesting is too deep."""
     lines, line, stack, count = [], "", [], 0
     i, want = SPACE.match(text).end(), "value"
 
@@ -209,14 +221,23 @@ def json_lines(text, keep=LINES + 1):
 
 def body_lines(text):
     """The body's lines as drawn, before they are made visible and clipped: a JSON body laid out by json_lines(),
-    anything else as text, its lines split at LF or CR LF, and either cut at LINES with a count of the rest."""
-    if not text.strip():
+    anything else as text, its lines split at LF or CR LF, and either cut at LINES with a count of the rest. Of a text
+    body only the line endings at its start and its end are dropped, the empty lines they make; every other character
+    is drawn, a space, a control character or a separator as much as a letter. A body made of line endings alone is
+    drawn as their escapes on one line, so that only a body of nothing at all is drawn as (empty body)."""
+    if text == "":
         return ["(empty body)"]
     laid = json_lines(text)
     if laid:
         lines, count = laid
     else:
-        lines = re.split(r"\r?\n", text.strip())
+        lines = re.split(r"\r?\n", text)
+        first = next((i for i, line in enumerate(lines) if line), None)
+        if first is None:
+            lines = [text]
+        else:
+            last = next(i for i in range(len(lines) - 1, -1, -1) if lines[i])
+            lines = lines[first:last + 1]
         count = len(lines)
     return lines[:LINES] + [f"... ({count - LINES} more lines)"] if count > LINES else lines
 
@@ -252,9 +273,21 @@ def title_for(r):
     return f"{r.get('label') or r['environment']} - {r['method']} {r.get('path') or r['url']}"
 
 
+def markup(drawn):
+    """The HTML of the rows drawn, for the frame's pre: each row a block of its own, which frame.html's row class makes
+    20px high, clipped to that box, cut with an ellipsis where it overflows the window and drawn left to right in
+    logical order. clip() cuts a row by the cells it counts; a glyph the font draws wider than that, or marks stacked
+    on a character, are the browser's to cut, so they can neither run past the edge unmarked nor paint over another row.
+    The rows are not joined by line breaks, which the pre would draw as rows of their own."""
+    return "".join(f'<span class="row" style="{COLORS[c]}">{html.escape(t)}</span>' if c
+                   else f'<span class="row">{html.escape(t)}</span>' for c, t in drawn)
+
+
 def page(title, body):
-    """The frame with the title (made visible() and escaped here) and the body's HTML in place."""
-    return FRAME.read_text(encoding="utf-8").replace("{{title}}", html.escape(visible(title))).replace("{{body}}", body)
+    """The frame with the title (made visible() and escaped here) and the body's HTML in place. Both are filled in one
+    pass over the frame, so a placeholder written in the title or the body is drawn as text and never filled."""
+    fill = {"title": html.escape(visible(title)), "body": body}
+    return PLACEHOLDER.sub(lambda m: fill[m[1]], FRAME.read_text(encoding="utf-8"))
 
 
 def render(r, png, title=None):
@@ -262,7 +295,7 @@ def render(r, png, title=None):
     Raises Problem when no browser is found or the browser does not deliver the image."""
     png = Path(png).resolve()  # the page is given to the browser as a file URI, which only an absolute path has
     drawn = rows(r)
-    body = "\n".join(f'<span style="{COLORS[c]}">{html.escape(t)}</span>' if c else html.escape(t) for c, t in drawn)
+    body = markup(drawn)
     page_file = png.with_suffix(".html")
     # Encoded before the file is opened, so a character UTF-8 cannot hold never leaves the page cut short; visible()
     # has shown every lone surrogate already, and backslashreplace would write one the same way.

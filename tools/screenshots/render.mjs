@@ -110,7 +110,9 @@ function keptRows(text) {
 
 /** The frame with the title and the screen's HTML in place; a function replacement keeps `$` in them literal. */
 function page(title, body) {
-  return readFileSync(FRAME_FILE, 'utf8').replaceAll('{{title}}', () => escape(title)).replaceAll('{{body}}', () => body)
+  // One pass, so a {{body}} inside the title is not filled with the screen.
+  const fill = { title: escape(title), body }
+  return readFileSync(FRAME_FILE, 'utf8').replace(/\{\{(title|body)\}\}/g, (_, k) => fill[k])
 }
 
 /**

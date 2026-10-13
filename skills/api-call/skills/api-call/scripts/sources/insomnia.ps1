@@ -9,15 +9,21 @@ Reads Insomnia's local data, read-only:
     environment, which Insomnia lays over the global one, that folder's headers, and the client certificate the
     collection holds for the request's host
 
-Secrets stay in this process. Every value substituted from a variable is a secret, wherever it lands: a header value
-or name, the API key or its name, the bearer prefix, a cookie, a query parameter, the base URL. So is every value
-substituted into that variable's own value, at any depth, and a password in the base URL's userinfo, templated or
-not. The JSON it prints shows each of them as ********: a templated header value whole, a templated part of a name,
-prefix or base URL, and a client certificate by file name only. The script refuses to print if any secret would
-appear in its output in any form a response could carry it back in: as is, without surrounding whitespace,
-percent-encoded, JSON-escaped, or as HTML character references, in any letter case. A secret encoded twice over is
-not looked for. Variable names are case-sensitive, as in Insomnia. A redirect is recorded as the response, never
-followed, so a key is sent only to the host the collection named.
+Secrets stay in this process. A secret is a value in a credential position: the API key's value (in a header, a query
+parameter or a cookie), the bearer token, a header value the folder templates, a password in the base URL's userinfo
+(templated or typed), or its user when it has no password (https://TOKEN@host, as a service such as GitHub takes a
+token for the user), and the basic token sent from the userinfo, and a client certificate's passphrase; each together
+with every value substituted into it, at any depth. The JSON it prints shows each of them as ********, and a client
+certificate by file name only. The rest is configuration, shown as resolved and never a reason to refuse: the base
+URL's scheme, host, port and path, header names, the API key's name, the bearer prefix, the base URL's user beside a
+password, and the environment, collection and folder names. The script refuses to print if any secret would appear in
+its output, in its own letter case, in any form a response could carry it back in: as is, without surrounding
+whitespace, percent-encoded, JSON-escaped, or as HTML character references. A secret encoded twice over is not looked
+for. An API key or a bearer token that resolves to an empty value stops the call before anything is sent, with a
+message that quotes no value; an empty password in the base URL is sent, and its user is then the credential.
+Variable names are case-sensitive, as in Insomnia; only the default base URL variable, baseUrl, falls back to the one
+variable whose name matches it in another letter case. A value may resolve to at most 65536 characters. A redirect is
+recorded as the response, never followed, so a key is sent only to the host the collection named.
 
 .EXAMPLE
 pwsh -NoProfile -File insomnia.ps1 -Environment "My API - Test" -Collection "My API" -Path /api/items/42
@@ -58,21 +64,47 @@ function ConvertFrom-JsonEscapes([string]$text) {
         })
 }
 
-# HTML character references decoded as Python's html.unescape reads them: &#70; and &#x46; with the ; optional, and
-# the named ones a server would use for + / = & < > " '. A code point out of range reads as U+FFFD.
+# Every HTML5 named reference that stands for ASCII, as Python's html.entities.html5 lists them, with what it stands
+# for. Names are case-sensitive: &AMP; is &, but &Colon; is not a colon. The eight without a ; are the legacy ones,
+# which a reader decodes without it.
+$htmlNames = & {
+    $t = [Collections.Hashtable]::new([StringComparer]::Ordinal)
+    $pairs = @('Tab;', "`t", 'NewLine;', "`n", 'excl;', '!', 'QUOT', '"', 'QUOT;', '"', 'quot', '"', 'quot;', '"',
+        'num;', '#', 'dollar;', '$', 'percnt;', '%', 'AMP', '&', 'AMP;', '&', 'amp', '&', 'amp;', '&', 'apos;', "'",
+        'lpar;', '(', 'rpar;', ')', 'ast;', '*', 'midast;', '*', 'plus;', '+', 'comma;', ',', 'period;', '.', 'sol;', '/',
+        'colon;', ':', 'semi;', ';', 'LT', '<', 'LT;', '<', 'lt', '<', 'lt;', '<', 'equals;', '=', 'GT', '>', 'GT;', '>',
+        'gt', '>', 'gt;', '>', 'quest;', '?', 'commat;', '@', 'lbrack;', '[', 'lsqb;', '[', 'bsol;', '\', 'rbrack;', ']',
+        'rsqb;', ']', 'Hat;', '^', 'UnderBar;', '_', 'lowbar;', '_', 'DiacriticalGrave;', '`', 'grave;', '`',
+        'fjlig;', 'fj', 'lbrace;', '{', 'lcub;', '{', 'VerticalLine;', '|', 'verbar;', '|', 'vert;', '|', 'rbrace;', '}',
+        'rcub;', '}')
+    for ($i = 0; $i -lt $pairs.Count; $i += 2) { $t[$pairs[$i]] = $pairs[$i + 1] }
+    $t
+}
+
+# HTML character references decoded as Python's html.unescape reads them: &#70; and &#x46; with the ; optional and
+# any number of leading zeros; every named reference that stands for ASCII (see $htmlNames), a legacy one also with
+# no ; and at the start of a longer name, as &ampx reads &x; and the rest of the HTML 4 set, such as &eacute;, as
+# .NET's WebUtility decodes it. A code point out of range reads as U+FFFD.
 function ConvertFrom-HtmlReferences([string]$text) {
     if ($text.IndexOf([char]'&') -lt 0) { return $text }
-    return [regex]::Replace($text, '&(?:#([0-9]+);?|#[xX]([0-9A-Fa-f]+);?|(plus|sol|equals|apos);|(amp|lt|gt|quot);?)', {
+    return [regex]::Replace($text, '&(?:#([0-9]+);?|#[xX]([0-9A-Fa-f]+);?|([A-Za-z][A-Za-z0-9]{0,31})(;?))', {
             param($m)
-            $digits = $m.Groups[1].Value + $m.Groups[2].Value
-            if ($digits) {
-                $n = if ($digits.Length -gt 8) { -1 } elseif ($m.Groups[1].Success) { [long]$digits } else { [Convert]::ToInt64($digits, 16) }
+            if ($m.Groups[1].Success -or $m.Groups[2].Success) {
+                $digits = ($m.Groups[1].Value + $m.Groups[2].Value).TrimStart('0')
+                $n = if (-not $digits -or $digits.Length -gt 8) { -1 } elseif ($m.Groups[1].Success) { [long]$digits } else { [Convert]::ToInt64($digits, 16) }
                 if ($n -le 0 -or $n -gt 0x10FFFF -or ($n -ge 0xD800 -and $n -le 0xDFFF)) { return [string][char]0xFFFD }
                 return [char]::ConvertFromUtf32([int]$n)
             }
-            switch -CaseSensitive ($m.Groups[3].Value + $m.Groups[4].Value) {
-                'plus' { '+' } 'sol' { '/' } 'equals' { '=' } 'apos' { "'" } 'amp' { '&' } 'lt' { '<' } 'gt' { '>' } default { '"' }
+            $name = $m.Groups[3].Value; $semi = $m.Groups[4].Value
+            if ($semi) {
+                if ($htmlNames.ContainsKey("$name;")) { return $htmlNames["$name;"] }
+                $decoded = [Net.WebUtility]::HtmlDecode($m.Value)
+                if ($decoded -cne $m.Value) { return $decoded }
             }
+            foreach ($legacy in 'QUOT', 'quot', 'AMP', 'amp', 'LT', 'lt', 'GT', 'gt') {
+                if ($name.StartsWith($legacy, [StringComparison]::Ordinal)) { return $htmlNames[$legacy] + $name.Substring($legacy.Length) + $semi }
+            }
+            return $m.Value
         })
 }
 
@@ -101,27 +133,32 @@ function Get-SecretForms($list) {
     return , $forms
 }
 
-# True when any secret shows in any reading of any of the texts, in any letter case: a server echoes a header name
-# lower-cased (HTTP/2 always does), and .NET lower-cases a host.
+# True when any secret shows in any reading of any of the texts, in its own letter case. A secret is a credential's
+# value, which a server echoes as it was sent; the parts a server echoes case-folded (header names, a host) are not
+# secrets, so another letter case is another text.
 function Test-Exposed($texts, $list) {
     $forms = Get-SecretForms $list
     if ($forms.Count -eq 0) { return $false }
     foreach ($t in $texts) {
         if (-not $t) { continue }
         foreach ($r in (Get-Readings ([string]$t))) {
-            foreach ($f in $forms) { if ($r.Contains($f, [StringComparison]::OrdinalIgnoreCase)) { return $true } }
+            foreach ($f in $forms) { if ($r.Contains($f, [StringComparison]::Ordinal)) { return $true } }
         }
     }
     return $false
 }
 
-# An error message with every secret masked, as is, trimmed and percent-encoded; withheld whole if one still shows.
+# An error message with every secret masked, as is, trimmed and percent-encoded (in upper- or lower-case hex); withheld
+# whole if one still shows.
 function Hide-Secrets([string]$text, $list) {
     foreach ($s in @($list | Where-Object { $_ } | Sort-Object Length -Descending)) {
         foreach ($f in @($s.Trim(), $s)) {
             if (-not $f) { continue }
             $e = [Uri]::EscapeDataString($f)
-            foreach ($form in @($f, $e, $e.Replace('%20', '+'))) { $text = $text.Replace($form, '********', [StringComparison]::OrdinalIgnoreCase) }
+            $lower = [regex]::Replace($e, '%[0-9A-F]{2}', { param($m) $m.Value.ToLowerInvariant() })
+            foreach ($form in @($f, $e, $e.Replace('%20', '+'), $lower, $lower.Replace('%20', '+'))) {
+                $text = $text.Replace($form, '********', [StringComparison]::Ordinal)
+            }
         }
     }
     if (Test-Exposed @($text) $list) { return 'the error message would have shown a secret, so it is withheld' }
@@ -144,12 +181,13 @@ if (-not $InsomniaDir) {
     else { Join-Path $HOME '.config/Insomnia' }
 }
 
-# A JSON value as hashtables, arrays and plain values. System.Text.Json reads strings as strings: ConvertFrom-Json
-# on PowerShell 7.4 turns an ISO date in one into a DateTime, which then renders in another format and time zone.
+# A JSON value as dictionaries, arrays and plain values. System.Text.Json reads strings as strings: ConvertFrom-Json
+# on PowerShell 7.4 turns an ISO date in one into a DateTime, which then renders in another format and time zone. An
+# object keeps its keys in the file's order, as Insomnia's Object.keys does, and case-sensitive.
 function ConvertFrom-JsonElement([Text.Json.JsonElement]$e) {
     switch ($e.ValueKind.ToString()) {
         'Object' {
-            $h = [Collections.Hashtable]::new([StringComparer]::Ordinal)
+            $h = [Collections.Specialized.OrderedDictionary]::new([StringComparer]::Ordinal)
             foreach ($p in $e.EnumerateObject()) { $h[$p.Name] = ConvertFrom-JsonElement $p.Value }
             return $h
         }
@@ -171,7 +209,7 @@ function Read-InsomniaDb([string]$name) {
         if (-not $line.Trim()) { continue }
         $parsed = [Text.Json.JsonDocument]::Parse($line)
         try { $d = ConvertFrom-JsonElement $parsed.RootElement } finally { $parsed.Dispose() }
-        if ($d -isnot [Collections.IDictionary] -or -not $d.ContainsKey('_id')) { continue }
+        if ($d -isnot [Collections.IDictionary] -or -not $d.Contains('_id')) { continue }
         if ($d['$$deleted']) { $docs.Remove($d['_id']) } else { $docs[$d['_id']] = $d }
     }
     return $docs
@@ -191,55 +229,72 @@ function Format-Value($v) {
 $templateRx = '\{\{\s*(?:_\.([A-Za-z0-9_\-]+)|_\[\s*[''"]([^''"]+)[''"]\s*\]|([A-Za-z0-9_\-]+))\s*\}\}'
 # Variable names are case-sensitive, as in Insomnia: apiKey and APIKEY are two variables.
 $vars = [Collections.Hashtable]::new([StringComparer]::Ordinal)
-# A value that extends its own variable, as token = {{ token }}-v2 does, is resolved as its layer is read (see the
-# layers below); its resolution is kept here by the variable's name.
+# A value that extends its own variable, as token = {{ token }}-v2 does, is resolved as its layer is laid (see
+# Add-Layer); its resolution is kept here by the variable's name.
 $extended = [Collections.Hashtable]::new([StringComparer]::Ordinal)
-# What stands in for a masked part while a shown text is built: lower-case letters and digits, which a URL keeps as
-# they are wherever they fall, the host included. Format-Shown turns it into ********.
-$mark = 'apicallmasked7c1e'
+# Every other variable's resolution, made once and reused, so that a value naming another many times over cannot make
+# the work grow with each layer of nesting. It is emptied whenever a variable changes.
+$resolved = [Collections.Hashtable]::new([StringComparer]::Ordinal)
+# How many characters a resolved value may run to, as in the Postman source.
+$longest = 65536
 
 function Get-TemplateName($m) {
     return @($m.Groups[1].Value, $m.Groups[2].Value, $m.Groups[3].Value) | Where-Object { $_ } | Select-Object -First 1
 }
 
-function Format-Shown([string]$text) { return $text.Replace($mark, '********') }
+function Get-NestingError([string]$holder) { return "variable '$holder' in '$Environment' nests templates more than five deep, or refers to itself" }
+
+function Get-LengthError([string]$holder) {
+    if ($holder) { return "variable '$holder' in '$Environment' resolves to more than $longest characters" }
+    return "a value in '$Environment' or '$Collection' resolves to more than $longest characters"
+}
+
+# A variable's resolution, read at $depth: its extension if it has one, else the one made before, else made now.
+function Get-Variable([string]$name, [string]$holder, [int]$depth) {
+    $r = if ($extended.ContainsKey($name)) { $extended[$name] } elseif ($resolved.ContainsKey($name)) { $resolved[$name] } else { $null }
+    if ($null -eq $r) {
+        $r = Resolve-Template (Format-Value $vars[$name]) $holder $depth
+        $resolved[$name] = $r
+    } elseif ($depth + $r.Height -gt 5) { throw (Get-NestingError $holder) }
+    return $r
+}
 
 # A text with its templates resolved, as a hashtable:
-#   Value  the text as sent
-#   Shown  the text with each value substituted from a variable replaced by $mark
-#   Parts  every value substituted into the text at any depth: each variable's value fully resolved, and the values
-#          substituted into that variable's own value, and so on down
-#   Own    when the text extends its own variable, named by $self: that variable's values beneath this layer, whose
-#          text Shown keeps, and whose parts Parts holds
+#   Value   the text as sent
+#   Parts   every value substituted into the text at any depth: each variable's value fully resolved, and the values
+#           substituted into that variable's own value, and so on down
+#   Subs    each value substituted into this text itself: where it starts in Value, and its own resolution (R)
+#   Height  how many layers of variables lie beneath the text
 # $holder names the variable whose value the text is, if it is one. A name inside a variable's value is part of that
-# value, a secret, so an error names the holder instead.
-function Resolve-Template([string]$text, [string]$holder, [string]$self, [int]$depth) {
-    if ($depth -gt 5) { throw "variable '$holder' in '$Environment' nests templates more than five deep, or refers to itself" }
-    $parts = [Collections.Generic.List[string]]::new()
-    $own = [Collections.Generic.List[string]]::new()
-    $value = [Text.StringBuilder]::new(); $shown = [Text.StringBuilder]::new()
+# value, which may be a secret, so an error names the holder instead.
+function Resolve-Template([string]$text, [string]$holder, [int]$depth) {
+    if ($depth -gt 5) { throw (Get-NestingError $holder) }
+    $parts = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $subs = [Collections.Generic.List[object]]::new()
+    $value = [Text.StringBuilder]::new()
+    $height = 0
     $at = 0
     foreach ($m in [regex]::Matches($text, $templateRx)) {
-        $literal = $text.Substring($at, $m.Index - $at); $at = $m.Index + $m.Length
-        [void]$value.Append($literal); [void]$shown.Append($literal)
+        [void]$value.Append($text, $at, $m.Index - $at); $at = $m.Index + $m.Length
         $name = Get-TemplateName $m
         if (-not $vars.ContainsKey($name)) {
             if ($holder) { throw "variable '$holder' in '$Environment' names a variable that is not there" }
             throw "variable '$name' is not in environment '$Environment'"
         }
-        $r = if ($extended.ContainsKey($name)) { $extended[$name] } else {
-            Resolve-Template (Format-Value $vars[$name]) $(if ($holder) { $holder } else { $name }) '' ($depth + 1)
+        $r = Get-Variable $name $(if ($holder) { $holder } else { $name }) ($depth + 1)
+        if ($r.Height + 1 -gt $height) { $height = $r.Height + 1 }
+        if ($r.Value.Length -gt 0) {
+            $subs.Add(@{ Start = $value.Length; R = $r })
+            [void]$value.Append($r.Value)
+            [void]$parts.Add($r.Value); $parts.UnionWith($r.Parts)
         }
-        [void]$value.Append($r.Value)
-        $parts.AddRange($r.Parts)
-        if ($self -and $name -ceq $self) { [void]$shown.Append($r.Shown); $own.Add($r.Value); $own.AddRange($r.Own) }
-        else { [void]$shown.Append($mark); $parts.Add($r.Value); $parts.AddRange($r.Own) }
+        if ($value.Length -gt $longest) { throw (Get-LengthError $holder) }
     }
-    $rest = $text.Substring($at)
-    [void]$value.Append($rest); [void]$shown.Append($rest)
+    [void]$value.Append($text, $at, $text.Length - $at)
+    if ($value.Length -gt $longest) { throw (Get-LengthError $holder) }
     $v = $value.ToString()
     if ($v -match '\{\{|\{%') { throw "a value in '$Environment' or '$Collection' uses a template this script cannot resolve" }
-    return @{ Value = $v; Shown = $shown.ToString(); Parts = $parts; Own = $own }
+    return @{ Value = $v; Parts = $parts; Subs = $subs; Height = $height }
 }
 
 # A secret's resolved value, with it and every part substituted into it registered as secrets.
@@ -250,12 +305,61 @@ function Resolve-Secret([string]$text) {
     return $r.Value
 }
 
-# A text the record shows, such as a header name or the bearer prefix: its own text is shown as typed, and every part
-# substituted into it is registered as a secret and masked in Shown.
-function Resolve-Shown([string]$text) {
-    $r = Resolve-Template $text
-    $secrets.AddRange($r.Parts)
-    return $r
+# Every value substituted into the characters from $start to $end of a resolution's Value, at any depth, added to
+# $into: a value that lies wholly inside with all its parts, and of one that runs across an edge, the piece inside and
+# the parts of its own that lie inside it.
+function Add-PartsWithin($r, [int]$start, [int]$end, $into) {
+    foreach ($s in $r.Subs) {
+        $length = $s.R.Value.Length
+        if ($s.Start -ge $end) { break }
+        $from = [Math]::Max($start, $s.Start); $to = [Math]::Min($end, $s.Start + $length)
+        if ($from -ge $to) { continue }
+        if ($from -eq $s.Start -and $to -eq $s.Start + $length) { [void]$into.Add($s.R.Value); $into.UnionWith($s.R.Parts); continue }
+        [void]$into.Add($r.Value.Substring($from, $to - $from))
+        Add-PartsWithin $s.R ($from - $s.Start) ($to - $s.Start) $into
+    }
+}
+
+# A URL split on its text, as the Postman source splits it, so that whatever a template put in its scheme, host or
+# port cannot change where its password is: scheme://, then the authority up to the first / ? or #, in which a
+# user:password@ ends at the last @ and the user at its first :. Returns the URL without that userinfo, the user and
+# the password ($null for one it does not have), and where each starts in the URL.
+function Split-BaseUrl([string]$url) {
+    $m = [regex]::Match($url, '^([^/?#]*://)?([^/?#]*)(.*)$', [Text.RegularExpressions.RegexOptions]::Singleline)
+    $scheme = $m.Groups[1].Value; $authority = $m.Groups[2].Value
+    $out = @{ Url = $url; User = $null; Password = $null; UserAt = -1; PasswordAt = -1 }
+    # A char, not a string: a string is searched in the user's culture, and one such as Thai ignores punctuation.
+    $at = $authority.LastIndexOf([char]'@')
+    if ($at -lt 0) { return $out }
+    $info = $authority.Substring(0, $at)
+    $out.Url = $scheme + $authority.Substring($at + 1) + $m.Groups[3].Value
+    $out.UserAt = $scheme.Length
+    $colon = $info.IndexOf([char]':')
+    if ($colon -lt 0) { $out.User = $info; return $out }
+    $out.User = $info.Substring(0, $colon); $out.Password = $info.Substring($colon + 1); $out.PasswordAt = $scheme.Length + $colon + 1
+    return $out
+}
+
+# One layer of variables laid over those beneath it, as Insomnia lays them. A value that names its own variable in any
+# form, as baseUrl = {{ baseUrl }}/v2 or {{ _.baseUrl }}/v2 does, extends the one beneath. The layer's other values are
+# laid first, then each extension is resolved in the file's order, against them and what lies beneath, so the result
+# is the same on every run; an extension that names another one of the layer reads it as it was beneath when that one
+# comes later in the file.
+function Add-Layer($layer) {
+    if ($layer -isnot [Collections.IDictionary]) { return }
+    $extending = [Collections.Generic.List[string]]::new()
+    foreach ($k in @($layer.Keys)) {
+        $v = $layer[$k]
+        $extends = $v -is [string] -and $vars.ContainsKey($k) -and
+            @([regex]::Matches($v, $templateRx) | Where-Object { (Get-TemplateName $_) -ceq $k }).Count -gt 0
+        if ($extends) { $extending.Add($k) } else { $vars[$k] = $v; $extended.Remove($k) }
+    }
+    $resolved.Clear()
+    foreach ($k in $extending) {
+        $r = Resolve-Template $layer[$k] $k 0
+        $extended[$k] = $r; $vars[$k] = $r.Value
+        $resolved.Clear()
+    }
 }
 
 # The collection and the top-level folder whose auth, environment and headers apply.
@@ -283,9 +387,14 @@ if ($Folder) {
 }
 $folderName = if ($folderDoc) { [string]$folderDoc['name'] } else { $null }
 
+# The message for a credential that resolves to an empty value: it names the folder and the environment, labels both,
+# and never the value or a variable inside it.
+function Get-EmptyCredentialError([string]$what) {
+    return "the $what on folder '$folderName' resolves to an empty value: is a variable it uses empty in '$Environment', or kept in a sub-environment not chosen?"
+}
+
 # Variables, as Insomnia layers them: the global environment's base, the chosen sub-environment, then the folder's own
-# environment. A value that names its own variable in any form, as baseUrl = {{ baseUrl }}/v2 or {{ _.baseUrl }}/v2
-# does, extends the one beneath it.
+# environment (see Add-Layer).
 $envName, $subName = $Environment.Split('/', 2)
 $global = @($workspaces.Values | Where-Object { $_['scope'] -eq 'environment' -and $_['name'] -eq $envName })
 if ($global.Count -ne 1) { throw "expected one Insomnia global environment named '$envName', found $($global.Count)" }
@@ -298,35 +407,44 @@ if ($subName) {
     $layers += , $sub[0]['data']
 }
 if ($folderDoc) { $layers += , $folderDoc['environment'] }
-foreach ($layer in $layers) {
-    if ($layer -isnot [Collections.IDictionary]) { continue }
-    foreach ($k in @($layer.Keys)) {
-        $v = $layer[$k]
-        $extends = $v -is [string] -and $vars.ContainsKey($k) -and
-            @([regex]::Matches($v, $templateRx) | Where-Object { (Get-TemplateName $_) -ceq $k }).Count -gt 0
-        if ($extends) {
-            $r = Resolve-Template $v $k $k
-            $extended[$k] = $r; $vars[$k] = $r.Value
-        } else {
-            $vars[$k] = $v; $extended.Remove($k)
-        }
-    }
+foreach ($layer in $layers) { Add-Layer $layer }
+
+# The base URL is configuration, and the record shows it as resolved: scheme, host, port and path. Only its userinfo
+# holds a credential, typed or templated: the password, or the user when there is no password (see $userIsKey), with
+# every value substituted into it. Variable names are case-sensitive, but the default name, baseUrl, also finds the
+# one variable spelt baseURL or BaseUrl, if there is only one.
+if (-not $vars.ContainsKey($BaseUrlVar)) {
+    $like = [string[]]@($vars.Keys | Where-Object { $_ -ieq $BaseUrlVar })
+    [Array]::Sort($like, [StringComparer]::Ordinal)
+    if ($BaseUrlVar -ceq 'baseUrl' -and $like.Count -eq 1) { $BaseUrlVar = $like[0] }
+    elseif ($like.Count -gt 0) {
+        $names = @($like | ForEach-Object { "'$_'" }) -join ' and '
+        throw "environment '$Environment' has no '$BaseUrlVar' variable; variable names are case-sensitive, and it has $names`: name one with --base-url-var"
+    } else { throw "environment '$Environment' has no '$BaseUrlVar' variable" }
 }
+$b = Get-Variable $BaseUrlVar '' 0
+$baseUrl = $b.Value.TrimEnd('/')
+if (-not $baseUrl.StartsWith('https://', [StringComparison]::Ordinal)) { throw "'$BaseUrlVar' must be an https:// URL" }
+if (-not $Path.StartsWith('/', [StringComparison]::Ordinal)) { $Path = '/' + $Path }
+$split = Split-BaseUrl $baseUrl
+# A user with no password, or an empty one (https://TOKEN@host, or TOKEN:@host), is the credential itself, as the
+# Postman source holds: a service such as GitHub takes a token for the user. Beside a password, the user is shown.
+$userIsKey = [bool]$split.User -and -not $split.Password
+$within = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+if ($split.Password) {
+    [void]$within.Add($split.Password)
+    Add-PartsWithin $b $split.PasswordAt ($split.PasswordAt + $split.Password.Length) $within
+} elseif ($userIsKey) {
+    [void]$within.Add($split.User)
+    Add-PartsWithin $b $split.UserAt ($split.UserAt + $split.User.Length) $within
+}
+foreach ($s in $within) { $secrets.Add($s); $secrets.Add([Uri]::UnescapeDataString($s)) }
 
-# The base URL's own text is configuration, and the record shows it, with what it extends; a value substituted into
-# it is a secret like any other, masked in the record's url.
-if (-not $vars.ContainsKey($BaseUrlVar)) { throw "environment '$Environment' has no '$BaseUrlVar' variable" }
-$b = if ($extended.ContainsKey($BaseUrlVar)) { $extended[$BaseUrlVar] } else { Resolve-Template (Format-Value $vars[$BaseUrlVar]) }
-$secrets.AddRange($b.Parts)
-$baseUrl = $b.Value.TrimEnd('/'); $shownBase = $b.Shown.TrimEnd('/')
-if (-not $baseUrl.StartsWith('https://')) { throw "'$BaseUrlVar' must be an https:// URL" }
-if (-not $Path.StartsWith('/')) { $Path = '/' + $Path }
-
-# Auth and headers from the folder. $shownHeaders holds each header's shown value under its real name, and
-# $shownNames the name shown for one with a templated part.
+# Auth and headers from the folder. $shownHeaders holds each header as the record shows it: its name and a value that
+# is not a secret as resolved, a secret as ********. An API key or a bearer token that resolves to an empty value was
+# never supplied, so the call stops here, before anything is sent, as in the Postman source.
 $headers = [ordered]@{ 'Accept' = 'application/json'; 'User-Agent' = 'api-call' }
 $shownHeaders = [ordered]@{ 'Accept' = 'application/json'; 'User-Agent' = 'api-call' }
-$shownNames = @{}
 $authText = 'none'
 $queryKey = $null; $queryValue = $null
 $cookieKey = $null; $cookieValue = $null
@@ -334,27 +452,28 @@ if ($folderDoc -and (Test-Auth $folderDoc)) {
     $a = $folderDoc['authentication']
     switch ($a['type']) {
         'apikey' {
-            $key = Resolve-Shown ([string]$a['key']); $k = $key.Value; $kShown = Format-Shown $key.Shown
+            $k = (Resolve-Template ([string]$a['key'])).Value
             $v = Resolve-Secret ([string]$a['value'])
+            if (-not $v) { throw (Get-EmptyCredentialError 'API key') }
             switch ([string]$a['addTo']) {
-                'queryParams' { $queryKey = $k; $queryValue = $v; $authText = "API key in query parameter $kShown" }
-                'cookie' { $cookieKey = $k; $cookieValue = $v; $authText = "API key in cookie $kShown" }
-                { $_ -in '', 'header' } { $headers[$k] = $v; $shownHeaders[$k] = '********'; $shownNames[$k] = $kShown; $authText = "API key in header $kShown" }
+                'queryParams' { $queryKey = $k; $queryValue = $v; $authText = "API key in query parameter $k" }
+                'cookie' { $cookieKey = $k; $cookieValue = $v; $authText = "API key in cookie $k" }
+                { $_ -in '', 'header' } { $headers[$k] = $v; $shownHeaders[$k] = '********'; $authText = "API key in header $k" }
                 default { throw "API key on folder '$folderName' is added to '$($a['addTo'])', which is not supported (header, query parameter or cookie)" }
             }
         }
         'bearer' {
             $t = Resolve-Secret ([string]$a['token'])
-            $p = 'Bearer'; $pShown = 'Bearer'
-            if ($a['prefix']) { $prefix = Resolve-Shown ([string]$a['prefix']); $p = $prefix.Value; $pShown = Format-Shown $prefix.Shown }
-            $headers['Authorization'] = "$p $t"; $shownHeaders['Authorization'] = "$pShown ********"; $authText = 'bearer token'
+            if (-not $t) { throw (Get-EmptyCredentialError 'bearer token') }
+            $p = if ($a['prefix']) { (Resolve-Template ([string]$a['prefix'])).Value } else { 'Bearer' }
+            $headers['Authorization'] = "$p $t"; $shownHeaders['Authorization'] = "$p ********"; $authText = 'bearer token'
         }
         default { throw "auth type '$($a['type'])' on folder '$folderName' is not supported (API key and bearer only)" }
     }
 }
 foreach ($h in @($folderDoc ? $folderDoc['headers'] : @())) {
     if ($h -isnot [Collections.IDictionary] -or $h['disabled'] -or -not $h['name']) { continue }
-    $n = Resolve-Shown ([string]$h['name']); $name = $n.Value; $shownNames[$name] = Format-Shown $n.Shown
+    $name = (Resolve-Template ([string]$h['name'])).Value
     $raw = [string]$h['value']
     if ($raw -match '\{\{') { $headers[$name] = Resolve-Secret $raw; $shownHeaders[$name] = '********' }
     else { $value = (Resolve-Template $raw).Value; $headers[$name] = $value; $shownHeaders[$name] = $value }
@@ -366,45 +485,38 @@ if ($null -ne $cookieKey) {
     if ($cookieKey -match '[;,=]' -or $cookieValue -match '[;,]') {
         throw "the API key on folder '$folderName' cannot be sent as one cookie: its name or value holds a ; or a , (or its name an =)"
     }
-    $pair = "$cookieKey=$cookieValue"; $shownPair = "$(Format-Shown $key.Shown)=********"
+    $pair = "$cookieKey=$cookieValue"; $shownPair = "$cookieKey=********"
     if ($headers.Contains('Cookie')) { $pair += '; ' + $headers['Cookie']; $shownPair += '; ' + $shownHeaders['Cookie'] }
     $headers['Cookie'] = $pair; $shownHeaders['Cookie'] = $shownPair
 }
 
-# The url the record shows: the base URL's text with each value substituted into it masked, and a password in its
-# userinfo masked whatever its source, normalized as .NET sends the URL. .NET sends no userinfo, but a password
-# there is a secret all the same. A shown URL .NET cannot read, as with a templated port, is shown as built.
-$builder = [UriBuilder]::new($baseUrl + $Path)
-$userInfo = $builder.Uri.UserInfo
-if ($userInfo.Contains(':')) { $pw = $userInfo.Split(':', 2)[1]; $secrets.Add($pw); $secrets.Add([Uri]::UnescapeDataString($pw)) }
-$shownUrl = $shownBase + $Path
-try { $s = [Uri]::new($shownUrl) } catch { $s = $null }
-if ($s -and $s.IsAbsoluteUri) {
-    $shownUrl = $s.GetComponents([UriComponents]::AbsoluteUri -band -bnot [UriComponents]::UserInfo, [UriFormat]::UriEscaped)
-    $start = $s.Scheme + '://'
-    if ($s.UserInfo -and $shownUrl.StartsWith($start)) {
-        $user, $password = $s.UserInfo.Split(':', 2)
-        $shownUrl = $start + $user + $(if ($null -ne $password) { ':' + $mark }) + '@' + $shownUrl.Substring($start.Length)
-    }
+# The URL goes without its userinfo, which .NET would not send. The url the record shows is the one sent, normalized
+# as .NET sends it, with the userinfo put back as the base URL had it and its password masked, and its user too when
+# that is the credential: both are found on the text (see Split-BaseUrl), never by parsing it.
+$builder = [UriBuilder]::new($split.Url + $Path)
+$shownUrl = $builder.Uri.AbsoluteUri
+if ($null -ne $split.User) {
+    $start = $builder.Uri.Scheme + '://'
+    $shownUser = if ($userIsKey) { '********' } else { $split.User }
+    $shownUrl = $start + $shownUser + $(if ($null -ne $split.Password) { ':********' }) + '@' + $shownUrl.Substring($start.Length)
 }
-$shownUrl = Format-Shown $shownUrl
 if ($queryKey) {
     $pair = [Uri]::EscapeDataString($queryKey) + '=' + [Uri]::EscapeDataString($queryValue)
-    $shownPair = (Format-Shown ([Uri]::EscapeDataString($key.Shown))) + '=********'
     $existing = $builder.Query.TrimStart('?')
     $builder.Query = if ($existing) { "$existing&$pair" } else { $pair }
-    $shownUrl = $shownUrl + ($(if ($existing) { '&' } else { '?' })) + $shownPair
+    $shownUrl = $shownUrl + ($(if ($existing) { '&' } else { '?' })) + [Uri]::EscapeDataString($queryKey) + '=********'
 }
 # As Insomnia (libcurl) and Postman do: the URL's user and password, percent-decoded, go as basic auth, unless the
-# auth already set Authorization. .NET would send neither.
-if ($userInfo -and -not @($headers.Keys | Where-Object { $_ -ieq 'Authorization' })) {
-    $u, $pwPart = $userInfo.Split(':', 2)
-    $plain = [Uri]::UnescapeDataString($u) + ':' + $(if ($null -ne $pwPart) { [Uri]::UnescapeDataString($pwPart) } else { '' })
+# auth already set Authorization. The user is shown beside a password; the password, a user with none, and the basic
+# token are secrets.
+if (($split.User -or $null -ne $split.Password) -and -not @($headers.Keys | Where-Object { $_ -ieq 'Authorization' })) {
+    $plain = [Uri]::UnescapeDataString($split.User) + ':' + $(if ($null -ne $split.Password) { [Uri]::UnescapeDataString($split.Password) } else { '' })
     $basic = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($plain))
     $secrets.Add($basic)
     $headers['Authorization'] = "Basic $basic"; $shownHeaders['Authorization'] = 'Basic ********'
-    $shownUser = if ($s -and $s.UserInfo) { Format-Shown ($s.UserInfo.Split(':', 2)[0]) } else { '********' }
-    $via = "basic auth from the base URL as $shownUser"
+    $via = if ($userIsKey) { 'basic auth from the base URL as ********' }
+    elseif ($split.User) { "basic auth from the base URL as $($split.User)" }
+    else { 'basic auth from the base URL, with an empty user' }
     $authText = if ($authText -eq 'none') { $via } else { "$authText, and $via" }
 }
 $uri = $builder.Uri
@@ -451,21 +563,13 @@ if ($certDocs.Count -eq 1) {
 $message = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Get, $uri)
 foreach ($k in @($headers.Keys)) {
     $v = [string]$headers[$k]
-    $label = if ($shownNames.ContainsKey($k)) { $shownNames[$k] } else { $k }
     if ($k -match '[\x00-\x1f\x7f]') { throw "a header name on folder '$folderName' holds a line break or another control character; refusing to send it" }
-    if ($v -match '[\x00-\x08\x0a-\x1f\x7f]') { throw "header '$label' on folder '$folderName' holds a line break or another control character in its value; refusing to send it" }
+    if ($v -match '[\x00-\x08\x0a-\x1f\x7f]') { throw "header '$k' on folder '$folderName' holds a line break or another control character in its value; refusing to send it" }
     if ($message.Headers.TryAddWithoutValidation($k, $v)) { continue }
     if ([Net.Http.ByteArrayContent]::new([byte[]]@()).Headers.TryAddWithoutValidation($k, $v)) { $shownHeaders.Remove($k); continue }
-    throw "header '$label' on folder '$folderName' is not a valid HTTP header name"
+    throw "header '$k' on folder '$folderName' is not a valid HTTP header name"
 }
-# The request headers as the record shows them, each under its shown name; two names that show the same are numbered.
-$requestHeaders = [ordered]@{}
-foreach ($k in @($shownHeaders.Keys)) {
-    $n = if ($shownNames.ContainsKey($k)) { $shownNames[$k] } else { $k }
-    $label = $n; $i = 2
-    while ($requestHeaders.Contains($label)) { $label = "$n ($i)"; $i++ }
-    $requestHeaders[$label] = $shownHeaders[$k]
-}
+$requestHeaders = $shownHeaders
 
 # The body as text: a byte order mark wins, as in .NET's own reading, then the declared charset if .NET knows it,
 # then UTF-8. An unknown charset, such as the common misspelling utf8, is no reason to lose a response.
@@ -537,10 +641,12 @@ $json = [ordered]@{
     body            = $body
 } | ConvertTo-Json -Depth 6 -Compress -EscapeHandling EscapeNonAscii
 
-# No secret may appear in what is printed or drawn from it: in any string of the record or in the JSON, read every way
-# Get-Readings knows. render.py draws the body as returned; the decoded readings go further, for any reader that
-# decodes it.
-$shown = @($Environment, $Collection, $folderName, $shownUrl, $authText, $certName, $body, $json) +
-    @($requestHeaders.Keys) + @($requestHeaders.Values) + @($responseHeaders.Values)
+# No secret may appear in what is printed or drawn from it: in any string of the record a request or a response put
+# there, and in those strings as the JSON writes them, read every way Get-Readings knows. render.py draws the body as
+# returned; the decoded readings go further, for any reader that decodes it. The environment, collection and folder
+# names are the record's own labels, chosen by the user, and the field names and times hold nothing from a variable,
+# so none of them is a reason to refuse.
+$shown = @($shownUrl, $authText, $certName, $body) + @($requestHeaders.Keys) + @($requestHeaders.Values) + @($responseHeaders.Values)
+$shown += ConvertTo-Json -InputObject $shown -Compress -EscapeHandling EscapeNonAscii
 if (Test-Exposed $shown $secrets) { throw 'refusing to print: a secret would appear in the output' }
 Write-Out $false $json

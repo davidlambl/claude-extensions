@@ -14,28 +14,38 @@ Auth: AZURE_DEVOPS_TOKEN if set, otherwise a token from the Azure CLI
 A Microsoft Entra access token, which is what the CLI issues, is a JWT and is sent as Bearer; anything else is taken
 for a personal access token and sent as Basic with an empty user name, the way Azure DevOps documents it.
 The token goes only to --org, which must be https://dev.azure.com/ORG or https://ORG.visualstudio.com, and to the
-attachments Azure DevOps answers with, which must be on --org's own host, under --org, and hold no token. A redirect
-is an error, never followed. After posting it reads the comment back and checks that every image renders and matches
-the local file. Whatever it prints has the token masked, as is or in any one layer of encoding a response could carry
-it back in, before it is cut short.
+attachments Azure DevOps answers with, which must be attachments of that same organization, at either of its two
+addresses, and hold no token. A redirect is an error, never followed. After posting it reads the comment back and
+checks that every image renders and matches the local file. When the comment request fails in a way that does not
+say it was refused, the error says the comment may have been posted. Whatever it prints has the token masked, as is
+or in any one layer of encoding a response could carry it back in, before it is cut short; an error body in UTF-16 is
+decoded first.
 """
-import argparse, base64, functools, hashlib, html, html.entities, html.parser, http.client, json, os, re, shutil, ssl
-import subprocess, sys
+import argparse, base64, codecs, functools, hashlib, html, html.entities, html.parser, http.client, json, os, re
+import shutil, ssl, subprocess, sys
 import urllib.error, urllib.parse, urllib.request
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 TIMEOUT = 120
-# What an attachment url from a response may hold before it is embedded as ![name](url): --org's host, plain, and a
-# path of --org's path, at most two of a GUID, the project and DefaultCollection, then /_apis/wit/attachments/GUID.
-# Nothing in either can end the markdown link early, or carry a token, whole or in pieces.
+# What an attachment url from a response may hold before it is embedded as ![name](url): the host of one of the
+# organization's two addresses, plain, and a path of that address's path, at most two of a GUID, the project and
+# DefaultCollection, then /_apis/wit/attachments/GUID. Nothing in either can end the markdown link early, or carry a
+# token, whole or in pieces.
 PLAIN_HOST = re.compile(r"[A-Za-z0-9.-]+")
 GUID = r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"
 JWT = re.compile(r"eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*")
+# An organization's name: one label of a host name, as its ORG.visualstudio.com address holds it.
+ORG_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*")
 MASK = "********"
 
 
 class Problem(Exception):
     """A reason the post cannot go on. Its text is printed once the token is scrubbed from it."""
+
+
+class Refused(Problem):
+    """A request that was not carried out: refused here before it was sent, or answered with a 4xx status or with
+    Azure DevOps's sign-in page. Whatever else stops a request may have come after the server acted on it."""
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -66,15 +76,34 @@ def plain_name(name):
             and PurePosixPath(name).name == name and PureWindowsPath(name).name == name)
 
 
+def org_roots(org):
+    """Where --org's organization is, as (host, path) pairs: --org as given, and the same organization at its other
+    address, since https://dev.azure.com/ORG and https://ORG.visualstudio.com are one organization and Azure DevOps
+    may answer with either. The other address is left out when --org names no organization to build it from."""
+    o = urllib.parse.urlsplit(org)
+    host, path = o.hostname or "", o.path.rstrip("/")
+    roots = [(host, path)]
+    if host == "dev.azure.com":
+        name = path.split("/")[1] if path else ""
+        if ORG_NAME.fullmatch(name):
+            roots.append((f"{name.lower()}.visualstudio.com", ""))
+    elif host.endswith(".visualstudio.com"):
+        name = host[:-len(".visualstudio.com")]
+        if ORG_NAME.fullmatch(name):
+            roots.append(("dev.azure.com", f"/{name}"))
+    return roots
+
+
 def attachment_url(name, answer, org, project, secrets=()):
     """The url to embed an uploaded image with, as ![name](url). An upload's answer is not trusted: its url must hold
-    no secret, in path or query, in any form, and be an attachment of --org on --org's own host over https, with a
-    plain host and path, or it is refused before the comment is posted and never requested. Its query is not kept;
-    the file name is added here, from the name the comment gave."""
+    no secret, in path or query, in any form, and be an attachment of --org's organization over https, at either of
+    its addresses (dev.azure.com/ORG or ORG.visualstudio.com), with a plain host and path, or it is refused before the
+    comment is posted and never requested. Its query is not kept; the file name is added here, from the name the
+    comment gave."""
     url = answer.get("url") if isinstance(answer, dict) else None
     if not isinstance(url, str):
         raise Problem(f"the upload of {name} answered without a url")
-    o = urllib.parse.urlsplit(org)
+    roots = org_roots(org)
     if scrub(url, secrets) != url:
         why = "holds the token"
     else:
@@ -83,11 +112,13 @@ def attachment_url(name, answer, org, project, secrets=()):
         except ValueError:
             u = None
         segment = f"(?:{GUID}|{re.escape(project)}|DefaultCollection)"
-        path = re.escape(o.path.rstrip("/")) + f"(?:/{segment}){{0,2}}/_apis/wit/attachments/{GUID}"
-        if u and azure_devops(url) and PLAIN_HOST.fullmatch(u.netloc) and u.netloc.lower() == o.hostname \
-                and re.fullmatch(path, u.path, re.IGNORECASE):
-            return f"https://{o.hostname}{u.path}?fileName={urllib.parse.quote(name, safe='')}"
-        why = f"is not an attachment under {org} over https in plain URL characters"
+        if u and azure_devops(url) and PLAIN_HOST.fullmatch(u.netloc):
+            for host, root in roots:
+                path = re.escape(root) + f"(?:/{segment}){{0,2}}/_apis/wit/attachments/{GUID}"
+                if u.netloc.lower() == host and re.fullmatch(path, u.path, re.IGNORECASE):
+                    return f"https://{host}{u.path}?fileName={urllib.parse.quote(name, safe='')}"
+        under = " or ".join(f"https://{host}{root}" for host, root in roots)
+        why = f"is not an attachment under {under} over https in plain URL characters"
     raise Problem(f"refusing to embed the url Azure DevOps answered for {name}, which {why}: "
                   f"'{printable(url, secrets, 200)}'")
 
@@ -136,21 +167,49 @@ def scrub(text, secrets):
 
 def printable(text, secrets=(), limit=300):
     """Text a response chose, fit for a message: each secret masked in it, then one line with no control characters,
-    then cut short. The masking comes before the cut, so a cut never leaves part of a secret standing, and again
-    once the text is one line, in case that put a hidden one together."""
-    text = scrub(str(text), secrets)
+    then cut short. NULs are dropped first: text in UTF-16 read a byte at a time, as a status line or a header is,
+    has one between each character, which would hide a secret from the mask. The masking comes before the cut, so a
+    cut never leaves part of a secret standing, and again once the text is one line, in case that put a hidden one
+    together."""
+    text = scrub(str(text).replace("\0", ""), secrets)
     text = scrub("".join(ch if ch.isprintable() else "?" for ch in " ".join(text.split())), secrets)
     return text if limit is None or len(text) <= limit else text[:limit] + "..."
 
 
 def redirect_target(location, url, secrets):
-    """Where a redirect pointed, for its error message: the host its Location names, with no user name or password,
-    as written rather than in lower case, which the scrub would no longer match; url's host for a relative one."""
+    """Where a redirect pointed, for its error message: the host its Location names, with no user name or password;
+    url's host for a relative one. The whole Location is scrubbed before the host is picked out of it, since a token
+    holding '/', '?', '#' or '@' would otherwise be cut where the host ends, and its pieces match no mask. The
+    characters urlsplit drops (tab, CR and LF) and NULs go first, so the scrub sees what urlsplit would. The host is
+    kept as written rather than in lower case, which the scrub would no longer match."""
+    location = scrub(re.sub(r"[\t\r\n\0]", "", location or ""), secrets)
     try:
-        host = urllib.parse.urlsplit(location or "").netloc.rpartition("@")[2] or urllib.parse.urlsplit(url).netloc
+        host = urllib.parse.urlsplit(location).netloc.rpartition("@")[2] or urllib.parse.urlsplit(url).netloc
     except ValueError:
         return "a malformed address, " + printable(location, secrets, 100)
     return printable(host, secrets, 100)
+
+
+def error_body(raw, secrets):
+    """An error answer's body, fit for a message. Azure DevOps answers in UTF-8; a body in UTF-16, told by its byte
+    order mark or by NULs between ASCII characters, is decoded as UTF-16, its byte order taken from where the NULs
+    fall, so that a token in it is masked. A body read the wrong way would show a token's bytes as other characters,
+    which no mask matches, so its bytes are searched too, NULs dropped: a body that holds the token more often in its
+    bytes than in the text it was decoded to is left out."""
+    if raw.startswith(codecs.BOM_UTF8):
+        text = raw.decode("utf-8-sig", errors="replace")
+    elif raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        text = raw.decode("utf-16", errors="replace")
+    elif re.search(rb"[\x01-\x7f]\0[\x01-\x7f]", raw):
+        little = raw[1::2].count(0) >= raw[0::2].count(0)
+        text = raw.decode("utf-16-le" if little else "utf-16-be", errors="replace")
+    else:
+        text = raw.decode("utf-8", errors="replace")
+    pattern = masker(tuple(secrets))
+    if pattern and len(pattern.findall(raw.replace(b"\0", b"").decode("latin-1"))) \
+            > len(pattern.findall(text.replace("\0", ""))):
+        return "(its body is left out: it holds the token in a form that reads as other characters)"
+    return printable(text, secrets)
 
 
 def say(line, secrets):
@@ -183,9 +242,26 @@ class Client:
         self.secrets = [token, value, value.rstrip("=")]
         self.opener = opener or build_opener()
 
+    def answered(self, method, url, e):
+        """The Problem an HTTP error status makes: a redirect, never followed; a 4xx, which Azure DevOps refused; or
+        another status, which may have come after the request was acted on."""
+        if 300 <= e.code < 400:
+            where = redirect_target(e.headers.get("Location") if e.headers else None, url, self.secrets)
+            return Problem(f"{method} {url} answered HTTP {e.code}, a redirect to {where}; not followed, "
+                           "since the token goes to Azure DevOps only")
+        sent = f" (the token was sent as {self.kind})" if e.code in (401, 403) else ""
+        try:
+            answered = e.read()
+        except (http.client.HTTPException, OSError, ValueError):
+            answered = b""
+        body = error_body(answered, self.secrets)
+        return (Refused if 400 <= e.code < 500 else Problem)(
+            f"{method} {url} answered HTTP {e.code} {printable(e.reason, self.secrets, 100)}{sent}"
+            + (f": {body}" if body else ""))
+
     def call(self, method, url, body=None, content_type="application/json", raw=False):
         if not azure_devops(url):
-            raise Problem(f"refusing {method} {url}: the token goes to dev.azure.com or ORG.visualstudio.com over https and nowhere else")
+            raise Refused(f"refusing {method} {url}: the token goes to dev.azure.com or ORG.visualstudio.com over https and nowhere else")
         data = body if body is None or isinstance(body, bytes) else json.dumps(body).encode("utf-8")
         req = urllib.request.Request(url, data=data, method=method,
                                      headers={"Authorization": self.header, "Content-Type": content_type})
@@ -193,18 +269,12 @@ class Client:
             with self.opener.open(req, timeout=TIMEOUT) as r:
                 status, payload = r.status, r.read()
         except urllib.error.HTTPError as e:
-            if 300 <= e.code < 400:
-                where = redirect_target(e.headers.get("Location") if e.headers else None, url, self.secrets)
-                raise Problem(f"{method} {url} answered HTTP {e.code}, a redirect to {where}; not followed, "
-                              "since the token goes to Azure DevOps only") from None
-            sent = f" (the token was sent as {self.kind})" if e.code in (401, 403) else ""
             try:
-                answered = e.read()
-            except (http.client.HTTPException, OSError, ValueError):
-                answered = b""
-            body = printable(answered.decode("utf-8", errors="replace"), self.secrets)
-            raise Problem(f"{method} {url} answered HTTP {e.code} {printable(e.reason, self.secrets, 100)}{sent}"
-                          + (f": {body}" if body else "")) from None
+                problem = self.answered(method, url, e)
+            finally:
+                # Left open, it is reported when collected, its reason phrase unmasked, as Python 3.14 warns.
+                e.close()
+            raise problem from None
         except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as e:
             roots = isinstance(getattr(e, "reason", e), ssl.SSLCertVerificationError)
             hint = "; if this Python has no root certificates, run its Install Certificates.command, or pip install certifi" if roots else ""
@@ -213,10 +283,13 @@ class Client:
             return payload
         try:
             return json.loads(payload.decode("utf-8"))
-        except ValueError:
+        except (ValueError, RecursionError):  # JSON nested too deep to parse is not the JSON asked for either
             # Azure DevOps answers a refused token with HTTP 203 and its sign-in page, not a 401.
-            why = "its sign-in page: the token was not accepted" if status == 203 else "something other than JSON"
-            raise Problem(f"{method} {url} answered HTTP {status} with {why} (the token was sent as {self.kind})") from None
+            if status == 203:
+                raise Refused(f"{method} {url} answered HTTP 203 with its sign-in page: the token was not accepted "
+                              f"(the token was sent as {self.kind})") from None
+            raise Problem(f"{method} {url} answered HTTP {status} with something other than JSON "
+                          f"(the token was sent as {self.kind})") from None
 
 
 def token():
@@ -293,10 +366,18 @@ def publish(client, org, project, work_item, edit, text, files):
     text = embed(text, urls)
 
     base = f"{org}/{project}/_apis/wit/workItems/{work_item}/comments"
-    if edit:
-        c = client.call("PATCH", f"{base}/{edit}?format=markdown&api-version=7.1-preview.4", {"text": text})
-    else:
-        c = client.call("POST", f"{base}?format=markdown&api-version=7.1-preview.4", {"text": text})
+    try:  # an answer that does not say the comment was refused may have come after it was stored
+        if edit:
+            c = client.call("PATCH", f"{base}/{edit}?format=markdown&api-version=7.1-preview.4", {"text": text})
+        else:
+            c = client.call("POST", f"{base}?format=markdown&api-version=7.1-preview.4", {"text": text})
+    except Refused:
+        raise
+    except Exception as e:
+        why = str(e) if isinstance(e, Problem) else printable(f"{type(e).__name__}: {e}", client.secrets)
+        posted = f"comment {edit}" if edit else "the comment"
+        raise Problem(f"{posted} may have been posted, so look at the work item before posting again: {why}") \
+            from (e.__cause__ if isinstance(e, Problem) else e)
     id = comment_id(c, edit, client.secrets)
 
     try:  # the comment is up: whatever stops the checks must say so, or it may be posted twice

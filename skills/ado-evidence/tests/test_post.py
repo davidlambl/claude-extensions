@@ -8,7 +8,8 @@ recorded. A test of that kind judges any version of the script, since it imports
 The tests under API_CALL_E2E reach httpbin.org with a fake token, and nothing else; the one redirect they ask it for
 names postman-echo.com, which must never be reached.
 """
-import base64, contextlib, html, http.client, importlib.util, io, json, os, re, runpy, ssl, subprocess, sys, tempfile
+import base64, codecs, contextlib, html, http.client, importlib.util, io, json, os, re, runpy, ssl, subprocess, sys
+import tempfile
 import time, types, unittest, urllib.parse, urllib.request
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from unittest import mock
@@ -51,6 +52,16 @@ def decodings(text):
     json_unescaped = re.sub(r"\\([/\"'\\])", r"\1", json_unescaped)
     return (text, urllib.parse.unquote(text), urllib.parse.unquote_plus(text), html.unescape(text), json_unescaped,
             text.replace(" ", "+"))
+
+
+def readings(shown):
+    """shown as a reader could take it: as is; with NULs, and the '?' a character that cannot be printed becomes,
+    dropped; and as its bytes in UTF-16 of either byte order, NULs dropped, one byte a character, which brings back a
+    token whose bytes were decoded the wrong way and shown as other characters."""
+    yield shown
+    yield shown.replace("?", "").replace("\0", "")
+    for encoding in ("utf-16-le", "utf-16-be"):
+        yield shown.encode(encoding, "surrogatepass").replace(b"\0", b"").decode("latin-1")
 
 
 def parts(secret, n=12):
@@ -191,12 +202,13 @@ class AzureDevOps:
     Any other host answers like an echo service, so a request that should never have been made goes through."""
 
     def __init__(self, replace=None, render=render_markdown_images, attachment_url=None, host="dev.azure.com"):
-        self.replace, self.render, self.host = replace or {}, render, host
+        # host: the host it answers on, or several, for an organization reached at both of its addresses.
+        self.replace, self.render, self.hosts = replace or {}, render, {host} if isinstance(host, str) else set(host)
         self.attachment_url = attachment_url or (lambda id, name: f"{ORG}/{PROJECT_ID}/_apis/wit/attachments/{id}?fileName={urllib.parse.quote(name)}")
         self.attachments, self.comments, self.posted = {}, {}, []
 
     def __call__(self, sent):
-        if sent.host != self.host:
+        if sent.host not in self.hosts:
             return reply(200, {"url": f"{sent.scheme}://{sent.host}{sent.path}", "headers": sent.headers})
         step = self.step(sent)
         if step in self.replace:
@@ -294,15 +306,17 @@ class AsPosted(unittest.TestCase):
         self.assertEqual({(s.scheme, s.host) for s in run.sent} - {("https", "dev.azure.com")}, set(),
                          "a request went somewhere other than https://dev.azure.com")
 
-    def assertNoPartShown(self, shown, secrets=(PAT, BASIC, JWT, PUNCT, PUNCT_BASIC), fold=False):
-        """No run of 12 characters of any secret shows, as is or with one layer of encoding undone (fold: in any case)."""
-        for text in decodings(shown):
-            for secret in secrets:
-                for part in parts(secret):
-                    if fold:
-                        self.assertNotIn(part.lower(), text.lower(), f"part of {secret[:6]}... shown, in some case")
-                    else:
-                        self.assertNotIn(part, text, f"part of {secret[:6]}... shown")
+    def assertNoPartShown(self, shown, secrets=(PAT, BASIC, JWT, PUNCT, PUNCT_BASIC), fold=False, n=12):
+        """No run of n characters of any secret shows, in any reading of what was shown, as is or with one layer of
+        encoding undone (fold: in any case)."""
+        for reading in readings(shown):
+            for text in decodings(reading):
+                for secret in secrets:
+                    for part in parts(secret, n):
+                        if fold:
+                            self.assertNotIn(part.lower(), text.lower(), f"part of {secret[:6]}... shown, in some case")
+                        else:
+                            self.assertNotIn(part, text, f"part of {secret[:6]}... shown")
 
 
 class Baseline(AsPosted):
@@ -630,6 +644,92 @@ class Scrubbing(AsPosted):
                 self.assertIn("evil.example", run.shown)
                 self.assertNoPartShown(run.shown, fold=True)
 
+    def test_d6_a_redirect_whose_token_holds_url_punctuation_is_scrubbed_before_its_host_is_picked_out(self):
+        # PUNCT holds '/', '?', '#' and '@', and its Basic value '/' and '+': each ends a host part way through the
+        # token, so a scrub of the host alone would see pieces of it, which no mask matches.
+        for token, secret in ((PUNCT, PUNCT), (PUNCT, PUNCT_BASIC), (PAT, PAT)):
+            for location, host in ((f"https://{secret}.evil.example/", "********.evil.example"),
+                                   (f"https://u:{secret}@evil.example/x", "evil.example"),
+                                   (f"https://evil@{secret}", "********"),
+                                   (f"https://evil.example/?next={secret}", "evil.example"),
+                                   (f"https://{secret}", "********"),
+                                   (f"https://{chr(0).join(secret)}.evil.example/", "********.evil.example")):
+                with self.subTest(secret=secret[:8], location=location[:24]):
+                    run = self.refused(reply(302, body=b"", reason="Found", headers={"Location": location}), token)
+                    self.assertNoPartShown(run.shown, (PUNCT, PUNCT_BASIC, PAT, BASIC), fold=True, n=8)
+                    self.assertIn("not followed", run.shown)
+                    self.assertIn(f"a redirect to {host}", run.shown)
+
+    def test_d6_an_error_body_in_utf16_is_decoded_and_the_token_in_it_masked(self):
+        bom_le, bom_be = codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE
+        shapes = {"UTF-16LE": lambda t: t.encode("utf-16-le"), "UTF-16BE": lambda t: t.encode("utf-16-be"),
+                  "UTF-16LE with its BOM": lambda t: bom_le + t.encode("utf-16-le"),
+                  "UTF-16BE with its BOM": lambda t: bom_be + t.encode("utf-16-be"),
+                  "UTF-16LE a byte out of step": lambda t: b"x" + t.encode("utf-16-le"),
+                  "UTF-8 with its BOM": lambda t: codecs.BOM_UTF8 + t.encode("utf-8")}
+        for token, secrets in ((PAT, (PAT, BASIC, BASIC.rstrip("="))), (PUNCT, (PUNCT, PUNCT_BASIC)), (JWT, (JWT,))):
+            for secret in secrets:
+                forms = encoded(secret)
+                for form in ("as is, in whitespace", "percent-encoded", "JSON-escaped, / too", "HTML-escaped"):
+                    for shape, encode in shapes.items():
+                        with self.subTest(secret=secret[:8], form=form, shape=shape):
+                            body = encode(f"réjected: Authorization={forms[form]}; try again")
+                            run = self.refused(reply(400, body=body, reason="Bad Request",
+                                                     headers={"Content-Type": "text/plain; charset=utf-16"}), token)
+                            self.assertNoPartShown(run.shown)
+                            self.assertIn("HTTP 400", run.shown)
+                            self.assertIn("jected: Authorization=", run.shown)  # decoded, so still readable
+                            self.assertIn("try again", run.shown)
+                            if shape != "UTF-16LE a byte out of step":
+                                self.assertIn("réjected", run.shown)
+
+    def test_d6_a_body_whose_bytes_hold_the_token_read_another_way_than_it_was_decoded_is_left_out(self):
+        # A UTF-16 byte order mark or a NUL between ASCII characters says UTF-16, but the token is in UTF-8 beside
+        # it: decoded as UTF-16, its bytes would show as other characters, which encode back to the token.
+        for secret in (PAT, BASIC, PUNCT):
+            text = f"rejected: {secret}; try again".encode("utf-8")
+            for shape, body in (("UTF-16LE BOM, then UTF-8", codecs.BOM_UTF16_LE + text),
+                                ("UTF-16BE BOM, then UTF-8", codecs.BOM_UTF16_BE + text),
+                                ("NULs between ASCII, then UTF-8", "ok: ".encode("utf-16-le") + text),
+                                ("UTF-16LE, then the token in UTF-8", "rejected: ".encode("utf-16-le") + secret.encode()),
+                                ("UTF-16LE, then the token in UTF-16BE",
+                                 ("rejected, at some length: " * 4).encode("utf-16-le") + secret.encode("utf-16-be"))):
+                with self.subTest(secret=secret[:8], shape=shape):
+                    run = self.refused(reply(400, body=body, reason="Bad Request"), PUNCT if secret == PUNCT else PAT)
+                    self.assertNoPartShown(run.shown)
+                    self.assertIn("HTTP 400", run.shown)
+                    self.assertIn("body is left out", run.shown)
+
+    def test_d6_a_status_line_or_a_location_in_utf16_shows_none_of_the_token(self):
+        for token, secret in ((PAT, PAT), (PAT, BASIC), (PUNCT, PUNCT), (PUNCT, PUNCT_BASIC)):
+            for shape, text in (("UTF-16LE", secret.encode("utf-16-le").decode("latin-1")),
+                                ("UTF-16BE with its BOM", (codecs.BOM_UTF16_BE + secret.encode("utf-16-be")).decode("latin-1"))):
+                with self.subTest(secret=secret[:8], shape=shape):
+                    run = self.refused(reply(401, body=b"", reason=f"Unauthorized {text} here"), token)
+                    self.assertIn("HTTP 401 Unauthorized", run.shown)
+                    self.assertNoPartShown(run.shown)
+                    run = self.refused(reply(302, body=b"", reason="Found", headers={"Location": f"https://{text}.evil.example/"}), token)
+                    self.assertIn("not followed", run.shown)
+                    self.assertNoPartShown(run.shown, fold=True)
+
+    def test_d6_an_http_error_is_closed_so_no_warning_shows_its_reason_phrase(self):
+        # An HTTPError left open is reported when collected, with its reason phrase as the server gave it: Python 3.14
+        # warns "Implicitly cleaning up <HTTPError 401: '...'>", unmasked.
+        post = load_post()
+        for code, headers in ((302, {"Location": "https://evil.example/"}), (401, {}), (500, {})):
+            with self.subTest(code=code):
+                fp = io.BytesIO(f"echo {BASIC}".encode())
+                error = urllib.error.HTTPError(f"{ORG}/x", code, f"echo {BASIC}", headers, fp)
+
+                def raises(req, timeout=None, error=error):
+                    raise error
+
+                client = post.Client(PAT, types.SimpleNamespace(open=raises))
+                with self.assertRaises(post.Problem) as caught:
+                    client.call("GET", f"{ORG}/x")
+                self.assertTrue(fp.closed, "the HTTPError was left open")
+                self.assertNoPartShown(str(caught.exception))
+
     def test_d6_an_attachment_url_refused_with_the_token_at_the_cut_shows_none_of_it(self):
         url = f"https://evil.example/{'x' * 139}{PAT}/_apis/wit/attachments/{{id}}"
         run = run_post(TWO_SHOTS, {"a.png": PNG, "b.png": PNG}, AzureDevOps(attachment_url=guid_url(url)))
@@ -663,8 +763,12 @@ class Scrubbing(AsPosted):
 
 
 class AttachmentHost(AsPosted):
-    """An attachment url from an upload's answer must be on --org's own host, under --org's path, and hold no token,
-    or the comment is not posted and the url is never requested."""
+    """An attachment url from an upload's answer must be an attachment of --org's organization, at either of its
+    addresses (dev.azure.com/ORG or ORG.visualstudio.com), and hold no token, or the comment is not posted and the
+    url is never requested."""
+
+    VS = "https://contoso.visualstudio.com"
+    BOTH = ("dev.azure.com", "contoso.visualstudio.com")  # where the stand-in answers: contoso at both addresses
 
     def assertRefused(self, run, shown=True):
         self.assertIn("refusing to embed", str(run.code))
@@ -673,22 +777,56 @@ class AttachmentHost(AsPosted):
         if shown:
             self.assertNoPartShown(run.shown)
 
-    def test_an_attachment_on_another_org_or_host_is_refused_and_gets_no_request(self):
+    def test_an_attachment_of_another_org_or_on_another_host_is_refused_and_gets_no_request(self):
         for org, url in ((ORG, "https://otherorg.visualstudio.com/_apis/wit/attachments/{id}"),
                          (ORG, "https://evil.example.visualstudio.com/{p}/_apis/wit/attachments/{id}"),
+                         (ORG, "https://contoso-other.visualstudio.com/{p}/_apis/wit/attachments/{id}"),
+                         (ORG, "https://contosox.visualstudio.com/{p}/_apis/wit/attachments/{id}"),
+                         (ORG, "https://sub.contoso.visualstudio.com/{p}/_apis/wit/attachments/{id}"),
+                         (ORG, "https://contoso.visualstudio.com.evil.example/{p}/_apis/wit/attachments/{id}"),
+                         (ORG, "https://contoso.visualstudio.com:443/{p}/_apis/wit/attachments/{id}"),
+                         (ORG, "https://contoso.visualstudio.com/otherorg/{p}/_apis/wit/attachments/{id}"),
+                         (ORG, "https://contoso.visualstudio.com/contoso/{p}/_apis/wit/attachments/{id}"),
                          (ORG, "https://dev.azure.com/otherorg/_apis/wit/attachments/{id}"),
                          (ORG, "https://dev.azure.com/otherorg/{p}/_apis/wit/attachments/{id}"),
                          (ORG, "https://dev.azure.com/contoso-other/{p}/_apis/wit/attachments/{id}"),
                          (ORG, "https://dev.azure.com/_apis/wit/attachments/{id}"),
-                         (ORG, "https://contoso.visualstudio.com/{p}/_apis/wit/attachments/{id}"),
-                         ("https://contoso.visualstudio.com", "https://dev.azure.com/contoso/{p}/_apis/wit/attachments/{id}"),
-                         ("https://contoso.visualstudio.com", "https://other.visualstudio.com/{p}/_apis/wit/attachments/{id}")):
+                         (self.VS, "https://dev.azure.com/otherorg/{p}/_apis/wit/attachments/{id}"),
+                         (self.VS, "https://dev.azure.com/contoso-other/{p}/_apis/wit/attachments/{id}"),
+                         (self.VS, "https://dev.azure.com/contosox/_apis/wit/attachments/{id}"),
+                         (self.VS, "https://dev.azure.com/{p}/_apis/wit/attachments/{id}"),
+                         (self.VS, "https://dev.azure.com/_apis/wit/attachments/{id}"),
+                         (self.VS, "https://other.visualstudio.com/{p}/_apis/wit/attachments/{id}"),
+                         (self.VS, "http://dev.azure.com/contoso/{p}/_apis/wit/attachments/{id}")):
             with self.subTest(org=org, url=url):
                 host = urllib.parse.urlsplit(org).hostname
                 run = run_post(TWO_SHOTS, {"a.png": PNG, "b.png": PNG},
-                               AzureDevOps(attachment_url=guid_url(url), host=host), args=["--org", org])
+                               AzureDevOps(attachment_url=guid_url(url), host=self.BOTH), args=["--org", org])
                 self.assertRefused(run)
                 self.assertEqual({s.host for s in run.sent}, {host}, "a request went to a host other than --org's")
+
+    def test_an_attachment_at_the_orgs_other_address_is_kept_and_downloaded_from_there(self):
+        # dev.azure.com/ORG and ORG.visualstudio.com are one organization; Azure DevOps may answer with either.
+        for org, url in ((ORG, "https://contoso.visualstudio.com/{p}/_apis/wit/attachments/{id}?fileName=a.png"),
+                         (ORG, "https://Contoso.VisualStudio.com/DefaultCollection/{p}/_apis/wit/attachments/{id}"),
+                         ("https://dev.azure.com/Contoso/", "https://contoso.visualstudio.com/_apis/wit/attachments/{id}"),
+                         (self.VS, "https://dev.azure.com/contoso/{p}/_apis/wit/attachments/{id}"),
+                         (self.VS + "/", "https://DEV.AZURE.COM/Contoso/Widgets/_apis/wit/attachments/{id}"),
+                         (self.VS + "/DefaultCollection", "https://dev.azure.com/contoso/{p}/_apis/wit/attachments/{id}")):
+            with self.subTest(org=org, url=url):
+                host = urllib.parse.urlsplit(org).hostname
+                other = urllib.parse.urlsplit(url).hostname
+                run = run_post(TWO_SHOTS, {"a.png": PNG, "b.png": PNG},
+                               AzureDevOps(attachment_url=guid_url(url), host=self.BOTH), args=["--org", org])
+                self.assertEqual(run.code, 0, run.shown)
+                self.assertNotEqual(host, other)
+                steps = [(AzureDevOps.step(s), s.scheme, s.host) for s in run.sent]
+                self.assertEqual({(scheme, h) for step, scheme, h in steps if step == "download"}, {("https", other)})
+                self.assertEqual({(scheme, h) for step, scheme, h in steps if step != "download"}, {("https", host)})
+                self.assertEqual([step for step, _, _ in steps].count("download"), 2)
+                self.assertRegex(run.ado.posted[0], r"!\[a\.png\]\(https://" + re.escape(other)
+                                 + r"/[^)\s]*_apis/wit/attachments/[0-9a-f-]+\?fileName=a\.png\)")
+                self.assertIn("ok   images rendered", run.out)
 
     def test_the_token_in_an_attachment_url_path_or_query_is_refused_and_unshown(self):
         for url in (f"https://dev.azure.com/{PAT}/_apis/wit/attachments/{{id}}",
@@ -785,6 +923,88 @@ class AfterPosting(AsPosted):
         self.assertIn("comment 7 was posted", run.shown)
         self.assertIn("PermissionError", run.shown)
         self.assertEqual(len(run.ado.posted), 1)
+
+
+def stores_then(answer):
+    """A comment step that stores the comment, as Azure DevOps would, then answers with answer: the comment is up
+    whatever post.py makes of the answer."""
+    def step(sent, ado):
+        ado.comment(sent)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+    return step
+
+
+DEEP = b"[" * 1000000 + b"]" * 1000000  # JSON nested deeper than Python's json parses
+
+
+def too_deep_to_parse(body):
+    """True when this Python's json gives up on body with a RecursionError, as each version does at its own depth."""
+    try:
+        json.loads(body)
+    except RecursionError:
+        return True
+    return False
+
+
+class CommentAnswer(AsPosted):
+    """A comment request answered with something other than the JSON asked for, or stopped in any way that does not
+    say it was refused, may have come after the comment was stored: the error says so, so it is not posted twice."""
+
+    NOT_JSON = {"an HTML page": reply(200, body=b"<html><body>Signed in. Continue</body></html>", headers={"Content-Type": "text/html"}),
+                "JSON nested too deep to parse": reply(200, body=DEEP, headers={"Content-Type": "application/json"}),
+                "an empty body": reply(200, body=b""),
+                "bytes that are not UTF-8": reply(201, body=b"\xff\xfe{\x00}\x00", reason="Created"),
+                "a 502 from a proxy": reply(502, body=b"Bad Gateway", reason="Bad Gateway"),
+                "a 303 to the stored comment": reply(303, body=b"", reason="See Other", headers={"Location": f"{ORG}/Widgets/_apis/wit/workItems/70012/comments/7"}),
+                "a dropped connection": http.client.RemoteDisconnected("Remote end closed connection without response")}
+
+    def test_a_comment_answered_with_other_than_its_json_says_it_may_have_been_posted(self):
+        for edit in (None, 12):
+            for what, answer in self.NOT_JSON.items():
+                with self.subTest(what=what, edit=edit):
+                    ado = AzureDevOps(replace={"comment": stores_then(answer)})
+                    ado.comments[12] = "the text first posted"
+                    run = run_post(TWO_SHOTS, {"a.png": PNG, "b.png": PNG}, ado, args=["--edit", "12"] if edit else [])
+                    self.assertNotEqual(run.code, 0)
+                    self.assertEqual(len(run.ado.posted), 1)
+                    self.assertNotIn("stopped by", run.shown)
+                    # JSON this Python does parse is JSON of the wrong shape, and comment_id says the comment was posted.
+                    says = "was" if what.startswith("JSON") and not too_deep_to_parse(DEEP) else "may have been"
+                    self.assertTrue(str(run.code).startswith(f"{'comment 12' if edit else 'the comment'} {says} posted"), run.code)
+                    self.assertIn("look at the work item before posting again", run.shown)
+                    self.assertNotIn("read", [AzureDevOps.step(s) for s in run.sent])
+                    self.assertOnlyAzureDevOps(run)
+                    self.assertNothingLeaked(run)
+
+    @unittest.skipUnless(too_deep_to_parse(DEEP), "this Python's json parses JSON this deep")
+    def test_json_nested_too_deep_to_parse_at_any_step_is_an_answer_other_than_json(self):
+        deep = self.NOT_JSON["JSON nested too deep to parse"]
+        for step in ("upload", "comment", "read"):
+            with self.subTest(step=step):
+                run = run_post(TWO_SHOTS, {"a.png": PNG, "b.png": PNG}, AzureDevOps(replace={step: deep}))
+                self.assertNotEqual(run.code, 0)
+                self.assertNotIn("stopped by", run.shown)
+                self.assertNotIn("RecursionError", run.shown)
+                self.assertIn("with something other than JSON", run.shown)
+                if step == "read":
+                    self.assertIn("comment 7 was posted", run.shown)
+
+    def test_a_comment_refused_with_a_4xx_or_the_sign_in_page_does_not_say_it_may_have_been_posted(self):
+        for what, answer, says in (
+                ("a 400", reply(400, {"message": "VS402625: the comment text is empty"}, reason="Bad Request"), "HTTP 400"),
+                ("a 401", reply(401, body=b"", reason="Unauthorized"), "HTTP 401"),
+                ("a 404", reply(404, {"message": "no such comment"}, reason="Not Found"), "HTTP 404"),
+                ("the sign-in page", reply(203, body=b"<html>Sign in</html>", reason="Non-Authoritative Information",
+                                           headers={"Content-Type": "text/html"}), "token was not accepted")):
+            with self.subTest(what=what):
+                run = run_post(TWO_SHOTS, {"a.png": PNG, "b.png": PNG}, AzureDevOps(replace={"comment": answer}))
+                self.assertNotEqual(run.code, 0)
+                self.assertIn(says, run.shown)
+                self.assertNotIn("may have been posted", run.shown)
+                self.assertNotIn("was posted", run.shown)
+                self.assertEqual(run.ado.posted, [])
 
 
 def dry_run(comment_text, images, env):

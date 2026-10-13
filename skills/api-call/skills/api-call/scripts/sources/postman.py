@@ -16,18 +16,26 @@ in Postman; dynamic variables such as {{$guid}} and scripts are not resolved. Th
 it must be (a space, a character outside ASCII), as Postman sends it. A user:password@ in the base URL is sent as
 basic auth, as Postman sends it, unless the auth already sets Authorization.
 
-Secrets stay in this process. Every value a variable puts into the request is a secret, at any depth: the auth's
-values, an API key's name, and a variable inside the base URL. The JSON it prints shows each as ********: the auth
-values whole, and the templated parts of a header name, a query parameter's name, a basic auth user and the URL;
-the base URL's own text is shown, except the password of a user:password@ in it, which is always masked. The script
-refuses to print if any secret would appear in its output or in the image drawn from it: as it is or trimmed of
-the whitespace a server trims from a header, plain, URL-encoded or escaped, and in the body as text or with its
-JSON, URL or HTML escapes decoded; a header name's part in any letter case, since servers echo header names
-case-folded. An error's message is masked for the same forms, and withheld when it cannot be; it never names a
-variable found inside another variable's value. A credential that resolves empty, or a header value a request
-cannot carry (a newline at the end of a pasted key, say), stops the call before anything is sent, with a message
-that does not quote the value. A redirect is recorded as the response, never followed, so a key is sent only to
-the host the collection named.
+Secrets stay in this process. A secret is a value in a credential position: an API key's value, a bearer token, a
+basic auth password and the basic token itself, and the password of a user:password@ in the base URL, templated or
+typed; each together with every value substituted into it, at any depth. A basic auth user with an empty password is
+the credential itself (an API that takes the key as the user, as curl -u key: sends it), and so is a user@ in the base
+URL with no password. Every value in --vars, and every environment value typed secret, is a secret wherever it is
+used. The rest is configuration, shown as resolved and never refused for being echoed: the base URL's scheme, host,
+port and path, an API key's name, a basic auth user, the environment's and the collection's names. The JSON it prints
+shows each secret as ********, and a secret inside what is otherwise shown (a --vars value in the host, say) as well;
+the password of a user:password@ in the base URL is found in the URL as resolved, so a template cannot hide it from
+the mask. The script refuses to print if any secret would appear in its output or in the image drawn from it: as it
+is or trimmed of the whitespace a server trims from a header, plain, URL-encoded or escaped, and in the body as text
+or with its JSON, URL or HTML escapes decoded; matching is case-sensitive. An error's message is masked for the same
+forms, and withheld when it cannot be; it never names a variable found inside another variable's value. An API key
+or bearer token that resolves empty, a basic auth password templated to an empty value or one whose user is empty
+too, or a header value a request cannot carry (a newline at the end of a pasted key, say), stops the call before
+anything is sent, with a message that does not quote the value. A redirect is recorded as the response, never
+followed, so a key is sent only to the host the collection named. When the base URL variable is not defined, the one
+variable whose name matches it ignoring case is used, if there is exactly one (a collection written for baseURL).
+A limit: a key outside ASCII is sent as its Latin-1 bytes, and an echo of those bytes percent-encoded (%E4 for ä) is
+not looked for, so keep keys ASCII.
 """
 import argparse, base64, html, json, os, re, ssl, sys, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timezone
@@ -44,7 +52,7 @@ URL_ESCAPE = re.compile(r"(%[0-9A-Fa-f]{2})")
 JSON_ESCAPE = re.compile(r'\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))')
 JSON_SHORT = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
 SCHEMA = re.compile(r"/v2\.[01]\.0/")
-# A URL as scheme://, authority (with any user:password@) and the rest; a shown URL may have its scheme masked.
+# A URL as scheme://, authority (with any user:password@) and the rest.
 AUTHORITY = re.compile(r"([^/?#]*://)?([^/?#]*)(.*)", re.DOTALL)
 DEPTH = 5  # how deep a variable's value may hold templates of its own
 LONGEST = 65536  # characters a resolved value may run to: a crafted export cannot make one grow without end
@@ -99,28 +107,30 @@ def views(text):
     return out
 
 
-def find(texts, secrets, least=6, folded=()):
-    """The first secret any form of which shows in any view of any of the texts, or None. A secret in `folded` (a
-    part of a header name, which servers echo in their own letter case) is found in any letter case."""
+def find(texts, secrets, least=6):
+    """The first secret any form of which shows in any view of any of the texts, or None. Matching is case-sensitive."""
     seen = [view for text in texts for view in views(text)]
     for s in secrets:
         if any(form in view for form in forms(s, least) for view in seen):
             return s
-    lowered = [view.lower() for view in seen] if folded else []
-    for s in folded:
-        if any(form.lower() in view for form in forms(s, least) for view in lowered):
-            return s
     return None
 
 
-def scrub(text, secrets, folded=()):
-    """text with every form of every secret masked, the longest forms first so no part of one is left behind, and
-    those of a `folded` secret in any letter case; or WITHHELD when a secret would still show once the text is decoded."""
+def scrub(text, secrets):
+    """text with every form of every secret masked, the longest forms first so no part of one is left behind; or
+    WITHHELD when a secret would still show once the text is decoded."""
     for form in sorted({f for s in secrets for f in forms(s, least=1)}, key=len, reverse=True):
         text = text.replace(form, MASK)
-    for form in sorted({f for s in folded for f in forms(s, least=1)}, key=len, reverse=True):
-        text = re.sub(re.escape(form), MASK, text, flags=re.IGNORECASE)
-    return WITHHELD if find([text], secrets, folded=folded) else text
+    return WITHHELD if find([text], secrets) else text
+
+
+def hide(text, secrets):
+    """text, which is configuration and shown, with any form of a secret the record is checked for (see forms) in it
+    masked, the longest first: a --vars value in the host, say, or a variable that is part of a credential and of the
+    base URL too. Without this the record would carry the secret, and be refused."""
+    for form in sorted({f for s in secrets for f in forms(s)}, key=len, reverse=True):
+        text = text.replace(form, MASK)
+    return text
 
 
 def resolve(text, variables, used=None):
@@ -156,31 +166,18 @@ def resolve(text, variables, used=None):
     return value
 
 
-def masked(text, quote=str):
-    """text as the record shows it: each {{name}} as ******** (what a variable puts in is a secret), and the literal
-    text between passed through quote."""
-    pieces = TEMPLATE.split("" if text is None else str(text))  # odd indexes are the names
-    return "".join(MASK if i % 2 else quote(p) for i, p in enumerate(pieces))
-
-
-def userinfo(url):
-    """(url without the user:password@ before its host, the user, the password): None for a part it does not have."""
+def split_userinfo(url):
+    """(scheme://, user, password, the rest from the host on) of a URL as resolved, found on its text: the authority
+    runs from after :// to the first /, ? or #, and a user:password@ in it ends at its last @, as Postman reads it.
+    user is None when there is no @, password when the user has no colon after it. The URL is resolved before it is
+    split, so a template that holds the scheme, the host or the port cannot move the password out of reach."""
     m = AUTHORITY.match(url)
-    if "@" not in m.group(2):
-        return url, None, None
-    info, _, host = m.group(2).rpartition("@")
+    scheme, authority, rest = m.group(1) or "", m.group(2), m.group(3)
+    if "@" not in authority:
+        return scheme, None, None, authority + rest
+    info, _, host = authority.rpartition("@")
     user, colon, password = info.partition(":")
-    return (m.group(1) or "") + host + m.group(3), user, password if colon else None
-
-
-def without_password(url):
-    """url with the password of a user:password@ before its host masked, templated or not."""
-    m = AUTHORITY.match(url)
-    if "@" not in m.group(2):
-        return url
-    info, _, host = m.group(2).rpartition("@")
-    user, colon, _ = info.partition(":")
-    return (m.group(1) or "") + user + (":" + MASK if colon else "") + "@" + host + m.group(3)
+    return scheme, user, password if colon else None, host + rest
 
 
 def kv(entries):
@@ -272,21 +269,41 @@ def encoded(url):
                                                      for i, p in enumerate(parts))
 
 
+def base_url_variable(variables, name):
+    """The variable that holds the base URL: the one named, or when none is, the only one whose name matches it
+    ignoring case (a collection written for baseURL); Problem when there is no such variable, or more than one."""
+    if name in variables:
+        return name
+    near = [k for k in variables if str(k).lower() == name.lower()]
+    if len(near) == 1:
+        return near[0]
+    if near:
+        raise Problem(f"the environment has no '{name}' variable, and {len(near)} differ from it in letter case only "
+                      f"({', '.join(repr(str(k)) for k in near)}): pass --base-url-var")
+    raise Problem(f"the environment has no '{name}' variable")
+
+
 def build(collection, environment, extra, folder_name, base_url_var, path):
     """Everything the request needs, with what may be shown kept apart from what is sent."""
     check_exports(collection, environment)
     variables, secrets = load_variables(collection, environment, extra)
-    names = []  # the parts a variable put into a header name, which a server may echo in another letter case
-    if base_url_var not in variables:
-        raise Problem(f"the environment has no '{base_url_var}' variable")
-    # The base URL's own text is configuration, and shown; a variable inside it is a secret, masked in the record.
-    base = resolve(variables[base_url_var], variables, secrets).rstrip("/")
+    for declared in [s for s in secrets if "{{" in s]:  # a --vars or secret-typed value that holds templates
+        try:
+            secrets.append(resolve(declared, variables, secrets))
+        except Problem:
+            pass  # unresolvable: if the request uses it, resolving it there says so
+    base_url_var = base_url_variable(variables, base_url_var)
+    # The base URL is configuration, shown as resolved; only a user:password@ in it holds a credential.
+    base_parts = []
+    base = resolve(variables[base_url_var], variables, base_parts).rstrip("/")
     if not base.startswith("https://"):
         raise Problem(f"'{base_url_var}' must be an https:// URL")
-    shown_base = without_password(masked(variables[base_url_var]).rstrip("/"))
-    base, url_user, url_password = userinfo(base)  # http.client cannot send a user:password@; Postman sends basic auth
+    scheme, url_user, url_password, host_on = split_userinfo(base)  # http.client cannot send it; Postman sends basic auth
     if url_password:
         secrets += [url_password, urllib.parse.unquote(url_password)]
+        secrets += [p for p in base_parts if p and p in url_password]  # what a template put into the password
+    elif url_user is not None:  # https://KEY@host, or KEY:@host: with no password, the user is the credential
+        secrets += [url_user, urllib.parse.unquote(url_user)]
     if not path.startswith("/"):
         path = "/" + path
     folder = pick_folder(collection, folder_name)
@@ -299,19 +316,16 @@ def build(collection, environment, extra, folder_name, base_url_var, path):
     query = None
     if kind == "apikey":
         a = kv(auth.get("apikey"))
-        key_parts = []
-        key, value = resolve(a.get("key"), variables, key_parts), resolve(a.get("value"), variables, secrets)
-        secrets += key_parts
-        shown_key = masked(a.get("key"))
+        key, value = resolve(a.get("key"), variables), resolve(a.get("value"), variables, secrets)  # the name is shown
         if not value:
             raise Problem("the API key resolves to an empty value: is a --vars file missing?")
         secrets.append(value)
         if a.get("in") == "query":
             if not key:
                 raise Problem("the API key auth names no query parameter")
-            query, auth_text = (key, value), f"API key in query parameter {shown_key}"
+            query, auth_text = key, f"API key in query parameter {hide(key, secrets)}"
         else:
-            names += key_parts
+            shown_key = hide(key, secrets)
             check_header(key, value, shown_key)
             headers[key], shown[shown_key], auth_text = value, MASK, f"API key in header {shown_key}"
     elif kind == "bearer":
@@ -323,13 +337,18 @@ def build(collection, environment, extra, folder_name, base_url_var, path):
         headers["Authorization"], shown["Authorization"], auth_text = f"Bearer {token}", f"Bearer {MASK}", "bearer token"
     elif kind == "basic":
         b = kv(auth.get("basic"))
-        user, password = resolve(b.get("username"), variables, secrets), resolve(b.get("password"), variables, secrets)
-        if not password:
+        user_parts = []
+        user, password = resolve(b.get("username"), variables, user_parts), resolve(b.get("password"), variables, secrets)
+        if not password and (not user or TEMPLATE.search(str(b.get("password") or ""))):
+            # A blank password typed in is how an API that takes the key as the user is called; a templated one that
+            # resolves empty, or no user either, is a value kept out of the export and not supplied.
             raise Problem("the basic auth password resolves to an empty value: is a --vars file missing?")
         token = base64.b64encode(f"{user}:{password}".encode("utf-8")).decode("ascii")
         secrets += [password, token]
+        if not password:  # the user is the credential, as with curl -u key:
+            secrets += [user] + user_parts
         headers["Authorization"], shown["Authorization"] = f"Basic {token}", f"Basic {MASK}"
-        auth_text = f"basic auth as {masked(b.get('username'))}"
+        auth_text = f"basic auth as {hide(user, secrets) if password else MASK}"
     elif kind != "noauth":
         raise Problem(f"auth type '{kind}' is not supported (API key, bearer and basic only)")
     if url_user is not None and not any(h.lower() == "authorization" for h in headers):
@@ -338,17 +357,20 @@ def build(collection, environment, extra, folder_name, base_url_var, path):
         token = base64.b64encode(f"{user}:{urllib.parse.unquote(url_password or '')}".encode("utf-8")).decode("ascii")
         secrets.append(token)
         headers["Authorization"], shown["Authorization"] = f"Basic {token}", f"Basic {MASK}"
-        shown_user = userinfo(shown_base)[1]
-        via = f"basic auth from the base URL as {MASK if shown_user is None else shown_user}"
+        via = f"basic auth from the base URL as {hide(url_user, secrets) if url_password else MASK}"
         auth_text = via if auth_text == "none" else f"{auth_text}, and {via}"
-    url, shown_url = encoded(base + path), encoded(shown_base + path)
+    shown_base = scheme + host_on
+    if url_user is not None:  # the password masked by its place in the URL as resolved, and the user when it is the key
+        shown_base = (scheme + (url_user if url_password else MASK) + ("" if url_password is None else ":" + MASK)
+                      + "@" + host_on)
+    url, shown_url = encoded(scheme + host_on + path), encoded(hide(shown_base, secrets) + path)
     if query:
         joiner = "&" if "?" in url else "?"
-        url += joiner + urllib.parse.urlencode([query])
-        shown_url += joiner + masked(a.get("key"), urllib.parse.quote_plus) + "=" + MASK
+        url += joiner + urllib.parse.urlencode([(query, value)])
+        shown_url += joiner + hide(urllib.parse.quote_plus(query), secrets) + "=" + MASK
     return {"url": url, "shown_url": shown_url, "headers": headers, "shown_headers": shown, "auth": auth_text,
             "folder": folder.get("name") if folder is not None else None, "path": path,
-            "secrets": list(dict.fromkeys(s for s in secrets if s)), "names": list(dict.fromkeys(s for s in names if s))}
+            "secrets": list(dict.fromkeys(s for s in secrets if s))}
 
 
 def texts(record):
@@ -365,11 +387,10 @@ def texts(record):
     return out
 
 
-def exposed(record, secrets, names=()):
-    """The first secret that would be printed or drawn, in any form (see forms) and any view (see views), or None;
-    a part of a header name (`names`) in any letter case. A value under six characters is too short to tell from
-    ordinary text, and is not checked for."""
-    return find(texts(record), secrets, folded=names)
+def exposed(record, secrets):
+    """The first secret that would be printed or drawn, in any form (see forms) and any view (see views), or None.
+    A value under six characters is too short to tell from ordinary text, and is not checked for."""
+    return find(texts(record), secrets)
 
 
 def send(url, headers, cert, key, timeout):
@@ -434,13 +455,13 @@ def main():
         sys.exit(f"cannot build the request from the exports: {type(e).__name__}: "
                  + scrub(str(e), known_secrets(collection, environment, extra)))
     passphrase = os.environ.get("API_CALL_KEY_PASSPHRASE")
-    secrets, names = b["secrets"] + ([passphrase] if args.cert and passphrase else []), b["names"]
+    secrets = b["secrets"] + ([passphrase] if args.cert and passphrase else [])
     try:
         status, response_headers, body, elapsed, sent = send(b["url"], b["headers"], args.cert, args.key, args.timeout)
     except Problem as e:
-        sys.exit(scrub(str(e), secrets, names))
+        sys.exit(scrub(str(e), secrets))
     except Exception as e:  # a failed request's message can quote the URL, and with it a key in the query
-        sys.exit(f"the request failed: {type(e).__name__}: {scrub(str(e), secrets, names)}")
+        sys.exit(f"the request failed: {type(e).__name__}: {scrub(str(e), secrets)}")
     record = {
         "source": "postman",
         "environment": environment.get("name") or Path(args.env).stem,
@@ -459,7 +480,7 @@ def main():
         "response_headers": {h: response_headers[h] for h in ("Content-Type", "Content-Length", "Date", "Location") if response_headers.get(h)},
         "body": body.decode("utf-8-sig", errors="replace"),  # a BOM before a JSON body would keep it from pretty-printing
     }
-    if exposed(record, secrets, names):
+    if exposed(record, secrets):
         sys.exit("refusing to print: a secret would appear in the output")
     print(json.dumps(record, ensure_ascii=False))
 

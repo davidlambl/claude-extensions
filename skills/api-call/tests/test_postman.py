@@ -571,7 +571,7 @@ class Main(unittest.TestCase):
         self.assertEqual(json.loads(record["body"]), {"name": "café", "check": "✓", "binary": "�"})
 
 
-# --- parity with the Insomnia source: decisions D1, D2, D4 and D5 ---------------------------------------------------
+# --- parity with the Insomnia source: rules R1 to R5 ----------------------------------------------------------------
 
 def plain_env(*pairs, base="https://api.example.com"):
     """An environment whose values are all typed default, not secret: only what build() registers makes one a secret."""
@@ -591,10 +591,12 @@ BEARER_IN_APIKEY = apikey("Authorization", "Bearer {{token}}")  # how a Postman 
 
 
 class Parity(unittest.TestCase):
-    """D1: every value a variable puts into the request is a secret, at every depth, and a templated part is shown as
-    ********. D2: the base URL's own text is shown, a variable in it is a secret, a userinfo password is always masked.
-    D4: one layer of encoding is checked. D5: names are case-sensitive. A test's number is the Insomnia review entry
-    it is modelled on."""
+    """R1: a secret is a value in a credential position (an API key's value, a bearer token, a basic password and
+    token, a userinfo password), with every part substituted into it at every depth. R2: the rest is configuration,
+    shown as resolved and never refused for being echoed: the base URL's host, port and path, an API key's name, a
+    basic auth user. R3: matching is case-sensitive. R4: one layer of encoding is checked, names are case-sensitive.
+    R5: a userinfo password is masked wherever a template puts the scheme, host or port. A test's d-number is the
+    Insomnia review entry it is modelled on; r-tests are round three's."""
 
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
@@ -603,11 +605,11 @@ class Parity(unittest.TestCase):
     def build(self, auth, env, path="/x", extra=None):
         return postman.build(collection(auth), env, extra or {}, None, "baseUrl", path)
 
-    def main(self, auth, env, path, *script, extra=None):
+    def main(self, auth, env, path, *script, extra=None, variables=None):
         """main() on these exports against a fake server: (exit code, stdout, stderr, requests seen)."""
         root = Path(self.dir.name)
         (root / "env.json").write_text(json.dumps(env), encoding="utf-8")
-        (root / "col.json").write_text(json.dumps(collection(auth)), encoding="utf-8")
+        (root / "col.json").write_text(json.dumps(collection(auth, variables=variables)), encoding="utf-8")
         argv = ["--env", str(root / "env.json"), "--collection", str(root / "col.json"), "--path", path]
         if extra is not None:
             (root / "vars.json").write_text(json.dumps(extra), encoding="utf-8")
@@ -622,6 +624,15 @@ class Parity(unittest.TestCase):
         self.assertIn("refusing to print", err)
         for s in secrets:
             self.assertNotIn(s, err)
+
+    def assertPrinted(self, result, *echoed):
+        """The call printed its record, and the body shows each of `echoed` as the server returned it: the record."""
+        code, out, err, _ = result
+        self.assertEqual((code, err), (0, ""), err)
+        record = json.loads(out)
+        for e in echoed:
+            self.assertIn(e, record["body"])
+        return record
 
     def test_d1_02_resolve_registers_each_variable_fully_resolved_at_every_depth(self):
         used = []
@@ -647,51 +658,56 @@ class Parity(unittest.TestCase):
         echo = (200, {"Content-Type": "application/json"}, b'{"scheme": "FAKE-pfx-31415926"}')  # the prefix alone
         self.assertRefused(self.main(auth, env, "/headers", echo), "FAKE-pfx-31415926")
 
-    def test_d1_17_a_templated_query_parameter_name_is_masked_and_a_secret(self):
+    def test_r2_17_a_templated_query_parameter_name_is_shown_and_not_refused_when_echoed(self):
         env = plain_env(("qn", "FAKE-qn-27182818"), ("apiKey", "FAKE-key-4b8d2e61"))
         auth = apikey("q {{ qn }}", where="query")
         b = self.build(auth, env, "/get?x=1")
         self.assertEqual(b["url"], "https://api.example.com/get?x=1&q+FAKE-qn-27182818=FAKE-key-4b8d2e61")
-        self.assertEqual(b["shown_url"], "https://api.example.com/get?x=1&q+********=********")
-        self.assertEqual(b["auth"], "API key in query parameter q ********")
-        self.assertIn("FAKE-qn-27182818", b["secrets"])
+        self.assertEqual(b["shown_url"], "https://api.example.com/get?x=1&q+FAKE-qn-27182818=********")
+        self.assertEqual(b["auth"], "API key in query parameter q FAKE-qn-27182818")
+        self.assertNotIn("FAKE-qn-27182818", b["secrets"])
+        self.assertIn("FAKE-key-4b8d2e61", b["secrets"])
         code, out, err, seen = self.main(auth, env, "/get?x=1", OK_JSON)
         self.assertEqual(code, 0, err)
         self.assertEqual(seen[0]["url"], b["url"])
         self.assertEqual((json.loads(out)["url"], json.loads(out)["auth"]), (b["shown_url"], b["auth"]))
-        self.assertNotIn("FAKE-qn", out)
-        echo = (200, {"Content-Type": "application/json"}, b'{"args": {"q FAKE-qn-27182818": "x"}}')
-        self.assertRefused(self.main(auth, env, "/get", echo), "FAKE-qn-27182818")
+        self.assertNotIn("FAKE-key", out)
+        echo = (200, {"Content-Type": "application/json"}, b'{"args": {"q FAKE-qn-27182818": "x"}, "url": "/get?q+FAKE-qn-27182818=x"}')
+        self.assertPrinted(self.main(auth, env, "/get", echo), "q FAKE-qn-27182818", "q+FAKE-qn-27182818")
+        echo = (200, {"Content-Type": "application/json"}, b'{"args": {"q FAKE-qn-27182818": "FAKE-key-4b8d2e61"}}')
+        self.assertRefused(self.main(auth, env, "/get", echo), "FAKE-key-4b8d2e61")  # the key's value still is a secret
 
-    def test_d1_18_a_templated_header_name_is_masked_and_a_secret_in_any_letter_case(self):
+    def test_r2_r3_18_a_templated_header_name_is_shown_and_not_refused_when_echoed_in_any_letter_case(self):
         env = plain_env(("kn", "FAKE-kn-16180339"), ("apiKey", "FAKE-key-4b8d2e61"))
         auth = apikey("X-{{ kn }}")
         b = self.build(auth, env)
         self.assertEqual(b["headers"]["X-FAKE-kn-16180339"], "FAKE-key-4b8d2e61")
-        self.assertEqual(b["shown_headers"], {"Accept": "application/json", "User-Agent": "api-call", "X-********": "********"})
-        self.assertEqual(b["auth"], "API key in header X-********")
-        self.assertEqual(b["names"], ["FAKE-kn-16180339"])
+        self.assertEqual(b["shown_headers"], {"Accept": "application/json", "User-Agent": "api-call", "X-FAKE-kn-16180339": "********"})
+        self.assertEqual(b["auth"], "API key in header X-FAKE-kn-16180339")
+        self.assertNotIn("names", b)  # nothing is matched in another letter case any more
+        self.assertNotIn("FAKE-kn-16180339", b["secrets"])
         code, out, err, seen = self.main(auth, env, "/x", OK_JSON)
         self.assertEqual(code, 0, err)
         self.assertEqual(seen[0]["headers"]["x-fake-kn-16180339"], "FAKE-key-4b8d2e61")
         self.assertEqual((json.loads(out)["request_headers"], json.loads(out)["auth"]), (b["shown_headers"], b["auth"]))
-        self.assertNotIn("kn-16180339", out.lower())
-        # httpbin echoes a header's name title-cased, postman-echo lower-cased: either is the name's secret part.
+        self.assertNotIn("FAKE-key", out)
+        # httpbin echoes a header's name title-cased, postman-echo lower-cased: a name is shown either way.
         for echoed in ("X-Fake-Kn-16180339", "x-fake-kn-16180339", "X-FAKE-kn-16180339"):
             echo = (200, {"Content-Type": "application/json"}, json.dumps({"headers": {echoed: "short"}}).encode())
-            self.assertRefused(self.main(auth, env, "/headers", echo))
+            self.assertPrinted(self.main(auth, env, "/headers", echo), echoed)
 
-    def test_d1_18_a_problem_with_a_templated_header_name_does_not_quote_it(self):
+    def test_r2_18_a_problem_with_a_templated_header_names_it_and_never_quotes_the_value(self):
         for kn, apikey_value, why in (("FAKE kn:16180339", "FAKE-key-4b8d2e61", "names no header"),
                                       ("FAKE-kn-16180339", "FAKE-key-4b8d2e61\n", "control character")):
             env = plain_env(("kn", kn), ("apiKey", apikey_value))
             with self.assertRaisesRegex(postman.Problem, why) as cm:
                 self.build(apikey("X-{{ kn }}"), env)
-            self.assertIn("X-********", str(cm.exception))
-            self.assertNotIn("16180339", str(cm.exception))
+            self.assertIn("X-" + kn, str(cm.exception))  # the name, which is configuration
+            self.assertNotIn("4b8d2e61", str(cm.exception))
             code, out, err, seen = self.main(apikey("X-{{ kn }}"), env, "/x", OK_JSON)
             self.assertEqual((code, out, seen), (1, "", []))
-            self.assertNotIn("16180339", err)
+            self.assertIn("X-" + kn, err)
+            self.assertNotIn("4b8d2e61", err)
 
     def test_d1_38_a_name_inside_a_variables_value_is_not_quoted(self):
         secret = "p4ss{{Hunter2-FAKE-pw}}w0rd"
@@ -706,14 +722,54 @@ class Parity(unittest.TestCase):
         with self.assertRaisesRegex(postman.Problem, "variable 'nope' is not"):  # a name the auth itself uses is named
             self.build(apikey("X-Api-Key", "{{nope}}"), plain_env())
 
-    def test_d1_a_templated_basic_auth_user_is_masked_and_a_secret(self):
+    def test_r2_a_templated_basic_auth_user_is_shown_and_not_refused_when_echoed(self):
         env = plain_env(("user", "FAKE-user-51505150"), ("apiKey", "FAKE-key-4b8d2e61"))
         auth = {"type": "basic", "basic": [{"key": "username", "value": "svc-{{ user }}"}, {"key": "password", "value": "{{apiKey}}"}]}
         b = self.build(auth, env)
-        self.assertEqual(b["auth"], "basic auth as svc-********")
-        self.assertIn("FAKE-user-51505150", b["secrets"])
+        self.assertEqual(b["auth"], "basic auth as svc-FAKE-user-51505150")
+        self.assertNotIn("FAKE-user-51505150", b["secrets"])
+        self.assertIn("FAKE-key-4b8d2e61", b["secrets"])
         echo = (200, {"Content-Type": "application/json"}, b'{"authenticated": true, "user": "svc-FAKE-user-51505150"}')
-        self.assertRefused(self.main(auth, env, "/basic-auth", echo), "FAKE-user-51505150")
+        record = self.assertPrinted(self.main(auth, env, "/basic-auth", echo), "svc-FAKE-user-51505150")  # a /me step
+        self.assertEqual((record["auth"], record["request_headers"]["Authorization"]), (b["auth"], "Basic ********"))
+        # postman-echo's own credentials: the user 'postman' is also the record's source and the host's name.
+        env = plain_env(("user", "postman"), ("pass", "password"))
+        auth = {"type": "basic", "basic": [{"key": "username", "value": "{{user}}"}, {"key": "password", "value": "{{pass}}"}]}
+        record = self.assertPrinted(self.main(auth, env, "/basic-auth", (200, {"Content-Type": "application/json"}, b'{"authenticated": true}')))
+        self.assertEqual(record["auth"], "basic auth as postman")
+        echo = (200, {"Content-Type": "application/json"}, b'{"password": "password"}')
+        self.assertRefused(self.main(auth, env, "/basic-auth", echo))  # the password still is a secret
+
+    def test_r1_a_blank_basic_password_sends_the_user_as_the_key_and_masks_it(self):
+        auth = {"type": "basic", "basic": [{"key": "username", "value": "{{apiKey}}"}, {"key": "password", "value": ""}]}
+        token = postman.base64.b64encode(b"FAKE-key-4b8d2e61:").decode()
+        for env, extra in ((plain_env(), {"apiKey": "FAKE-key-4b8d2e61"}), (plain_env(("apiKey", "FAKE-key-4b8d2e61")), None)):
+            b = self.build(auth, env, extra=extra)
+            self.assertEqual((b["headers"]["Authorization"], b["shown_headers"]["Authorization"]), (f"Basic {token}", "Basic ********"))
+            self.assertEqual(b["auth"], "basic auth as ********")  # the user is the credential, as with curl -u key:
+            self.assertTrue({"FAKE-key-4b8d2e61", token} <= set(b["secrets"]))
+            code, out, err, seen = self.main(auth, env, "/charges", OK_JSON, extra=extra)
+            self.assertEqual(code, 0, err)
+            self.assertEqual(seen[0]["headers"]["authorization"], f"Basic {token}")
+            self.assertEqual(json.loads(out)["auth"], "basic auth as ********")
+            self.assertNotIn("FAKE-key", out)
+            echo = (200, {"Content-Type": "application/json"}, b'{"livemode": false, "key": "FAKE-key-4b8d2e61"}')
+            self.assertRefused(self.main(auth, env, "/charges", echo, extra=extra), "FAKE-key-4b8d2e61")
+        v20 = {"type": "basic", "basic": {"username": "{{apiKey}}"}}  # a v2.0 export may leave the password out
+        self.assertEqual(self.build(v20, plain_env(), extra={"apiKey": "FAKE-key-4b8d2e61"})["headers"]["Authorization"], f"Basic {token}")
+        no_user = {"type": "basic", "basic": [{"key": "username", "value": ""}, {"key": "password", "value": "{{apiKey}}"}]}
+        self.assertEqual(self.build(no_user, plain_env(), extra={"apiKey": "FAKE-key-4b8d2e61"})["auth"], "basic auth as ")
+
+    def test_r1_an_empty_basic_credential_still_stops_the_call(self):
+        def basic(user, password):
+            return {"type": "basic", "basic": [{"key": "username", "value": user}, {"key": "password", "value": password}]}
+        for auth, env in ((basic("", ""), plain_env()),  # nothing at all
+                          (basic("{{u}}", ""), plain_env(("u", ""))),  # the user kept out of the export, no --vars
+                          (basic("amy", "{{pw}}"), plain_env(("pw", "")))):  # a templated password that resolves empty
+            with self.assertRaisesRegex(postman.Problem, "empty value.*--vars"):
+                self.build(auth, env)
+            code, out, err, seen = self.main(auth, env, "/x", OK_JSON)
+            self.assertEqual((code, out, seen), (1, "", []))
 
     def test_d1_a_resolver_cycle_or_runaway_value_is_refused_quickly(self):
         with self.assertRaisesRegex(postman.Problem, "cannot resolve"):
@@ -722,21 +778,75 @@ class Parity(unittest.TestCase):
         with self.assertRaisesRegex(postman.Problem, "more than"):
             postman.resolve("{{a}}", runaway)
 
-    def test_d2_25_a_variable_in_the_base_url_is_masked_and_a_secret(self):
-        env = plain_env(("fnKey", "FAKE-fnkey-8a7b6c5d"), base="https://api.example.com/anything/{{ fnKey }}/")
+    def test_r2_25_a_templated_base_url_is_shown_and_not_refused_when_echoed(self):
+        env = plain_env(("seg", "FAKE-seg-8a7b6c5d"), base="https://api.example.com/anything/{{ seg }}/")
         b = self.build(None, env)
-        self.assertEqual(b["url"], "https://api.example.com/anything/FAKE-fnkey-8a7b6c5d/x")
-        self.assertEqual(b["shown_url"], "https://api.example.com/anything/********/x")
-        self.assertIn("FAKE-fnkey-8a7b6c5d", b["secrets"])
-        code, out, err, seen = self.main(None, env, "/x", OK_JSON)
-        self.assertEqual(code, 0, err)
-        self.assertEqual((seen[0]["url"], json.loads(out)["url"]), (b["url"], b["shown_url"]))
-        self.assertNotIn("FAKE-fnkey", out)
+        self.assertEqual((b["url"], b["shown_url"]), ("https://api.example.com/anything/FAKE-seg-8a7b6c5d/x",) * 2)
+        self.assertNotIn("FAKE-seg-8a7b6c5d", b["secrets"])
         echo = (200, {"Content-Type": "application/json"}, json.dumps({"url": b["url"]}).encode())  # as /anything echoes
-        self.assertRefused(self.main(None, env, "/x", echo), "FAKE-fnkey-8a7b6c5d")
-        host = self.build(None, plain_env(("host", "api.example.com"), ("v", "v2"), base="https://{{host}}/{{ v }}"))
-        self.assertEqual((host["url"], host["shown_url"]), ("https://api.example.com/v2/x", "https://********/********/x"))
-        self.assertEqual(self.build(None, plain_env(("u", "https://api.example.com"), base="{{u}}"))["shown_url"], "********/x")
+        record = self.assertPrinted(self.main(None, env, "/x", echo), b["url"])
+        self.assertEqual(record["url"], b["shown_url"])
+        for base, pairs, shown in (("https://{{host}}/{{ v }}", (("host", "Api.Example.com"), ("v", "v2")), "https://Api.Example.com/v2/x"),
+                                   ("{{protocol}}://{{host}}", (("protocol", "https"), ("host", "api.example.com")), "https://api.example.com/x"),
+                                   ("{{ scheme }}://{{ host }}{{ base_path }}", (("scheme", "https"), ("host", "api.example.com"), ("base_path", "/api/v1")),
+                                    "https://api.example.com/api/v1/x"),
+                                   ("https://{{h}}", (("h", "{{sub}}.Org"), ("sub", "HttpBin")), "https://HttpBin.Org/x"),  # depth 2
+                                   ("{{u}}", (("u", "https://api.example.com"),), "https://api.example.com/x"),
+                                   ("https://api.example.com:{{port}}", (("port", "8443"),), "https://api.example.com:8443/x")):
+            env = plain_env(*pairs, base=base)
+            self.assertEqual(self.build(None, env)["shown_url"], shown, base)
+            # A server lower-cases a host in an absolute link, and a Spring error names the path it was asked for.
+            body = json.dumps({"self": shown.lower(), "path": shown.split("/", 3)[3], "url": shown})
+            echo = (302, {"Content-Type": "application/json", "Location": shown.lower()}, body.encode())
+            record = self.assertPrinted(self.main(None, env, "/x", echo), shown.lower())
+            self.assertEqual((record["url"], record["response_headers"]["Location"]), (shown, shown.lower()))
+        # A value that is also one of the record's own keys: status, from a /status/200 step with an empty body.
+        env = plain_env(("section", "status"), base="https://api.example.com/{{section}}")
+        record = self.assertPrinted(self.main(None, env, "/200", (200, {}, b"")))
+        self.assertEqual((record["url"], record["status"]), ("https://api.example.com/status/200", 200))
+
+    def test_r1_a_declared_secret_shown_as_configuration_is_masked_and_refused_when_echoed(self):
+        # A --vars value, or one typed secret, is a secret wherever it is used: masked in what is shown, never printed.
+        for env, extra, shown in ((plain_env(base="https://{{tenant}}.api.example.com"), {"tenant": "FAKE-tenant-0a1b2c"},
+                                   "https://********.api.example.com/x"),
+                                  ({**ENV, "values": [{"key": "baseUrl", "value": "https://{{tenant}}.api.example.com"},
+                                                      {"key": "tenant", "value": "FAKE-tenant-0a1b2c", "type": "secret"}]}, None,
+                                   "https://********.api.example.com/x"),
+                                  (plain_env(("sub", "FAKE-tenant-0a1b2c"), base="https://{{host}}"), {"host": "{{sub}}.api.example.com"},
+                                   "https://********/x")):  # a --vars value holding a template: the value, resolved, whole
+            b = self.build(None, env, extra=extra)
+            self.assertEqual((b["url"], b["shown_url"]), ("https://FAKE-tenant-0a1b2c.api.example.com/x", shown))
+            code, out, err, seen = self.main(None, env, "/x", OK_JSON, extra=extra)
+            self.assertEqual(code, 0, err)  # masked, so the record itself is not refused
+            self.assertEqual(json.loads(out)["url"], b["shown_url"])
+            self.assertNotIn("FAKE-tenant", out)
+            echo = (200, {"Content-Type": "application/json"}, json.dumps({"url": b["url"]}).encode())
+            self.assertRefused(self.main(None, env, "/x", echo, extra=extra), "FAKE-tenant-0a1b2c")
+        # A secret-typed API key name, and a variable that is part of a credential and of the base URL too.
+        hdr = {**ENV, "values": ENV["values"] + [{"key": "hdr", "value": "X-FAKE-hdr-778899", "type": "secret"}]}
+        b = self.build(apikey("{{hdr}}"), hdr)
+        self.assertEqual((b["shown_headers"]["********"], b["auth"]), ("********", "API key in header ********"))
+        env = plain_env(("acct", "FAKE-acct-5566778"), ("apiKey", "FAKE-key-4b8d2e61"), base="https://api.example.com/{{acct}}")
+        b = self.build(apikey("Authorization", "{{acct}}:{{apiKey}}"), env)
+        self.assertEqual(b["shown_url"], "https://api.example.com/********/x")
+        self.assertEqual(self.main(apikey("Authorization", "{{acct}}:{{apiKey}}"), env, "/x", OK_JSON)[0], 0)
+
+    def test_base_url_variable_falls_back_to_the_one_name_matching_ignoring_case(self):
+        def env(*pairs):
+            return {"name": "Test", "values": [{"key": k, "value": v} for k, v in pairs]}
+        bare = collection(variables=[])
+        b = postman.build(bare, env(("baseURL", "https://api.example.com")), {}, None, "baseUrl", "/x")
+        self.assertEqual(b["url"], "https://api.example.com/x")
+        b = postman.build(bare, env(("BaseURL", "https://other.example.com"), ("baseUrl", "https://api.example.com")), {}, None, "baseUrl", "/x")
+        self.assertEqual(b["url"], "https://api.example.com/x")  # an exact name wins
+        with self.assertRaisesRegex(postman.Problem, "no 'baseUrl' variable, and 2 differ from it in letter case only \\('baseURL', 'BASEURL'\\)"):
+            postman.build(bare, env(("baseURL", "https://a.example.com"), ("BASEURL", "https://b.example.com")), {}, None, "baseUrl", "/x")
+        with self.assertRaisesRegex(postman.Problem, "^the environment has no 'baseUrl' variable$"):
+            postman.build(bare, env(("base", "https://api.example.com")), {}, None, "baseUrl", "/x")
+        with self.assertRaisesRegex(postman.Problem, "'baseURL' must be an https:// URL"):
+            postman.build(bare, env(("baseURL", "http://api.example.com")), {}, None, "baseUrl", "/x")
+        code, out, err, seen = self.main(None, env(("baseURL", "https://api.example.com")), "/x", OK_JSON, variables=[])
+        self.assertEqual((code, seen[0]["url"]), (0, "https://api.example.com/x"), err)
 
     def test_d2_26_a_userinfo_password_is_masked_and_sent_as_basic_auth(self):
         env = plain_env(("pw", "FAKE-pw-9z8y7x6w"), base="https://user:{{ pw }}@api.example.com")
@@ -762,7 +872,56 @@ class Parity(unittest.TestCase):
         self.assertEqual((own["headers"]["Authorization"], own["auth"]), (f"Bearer {KEY}", "bearer token"))
         self.assertEqual(own["shown_url"], "https://user:********@api.example.com/x")
         whole = self.build(None, plain_env(("creds", "FAKE-user:FAKE-pw-9z8y7x6w"), base="https://{{creds}}@api.example.com"))
-        self.assertEqual((whole["shown_url"], whole["auth"]), ("https://********@api.example.com/x", "basic auth from the base URL as ********"))
+        self.assertEqual((whole["shown_url"], whole["auth"]), ("https://FAKE-user:********@api.example.com/x", "basic auth from the base URL as FAKE-user"))
+        self.assertIn("FAKE-pw-9z8y7x6w", whole["secrets"])
+        self.assertNotIn("FAKE-user", whole["secrets"])
+        # Each part a template puts into the password is a secret of its own, echoed alone or not.
+        parts = plain_env(("pfx", "FAKE-pfx-31415926"), ("tok", "FAKE-tok-27182818"), base="https://user:{{pfx}}.{{tok}}@api.example.com")
+        b = self.build(None, parts)
+        self.assertTrue({"FAKE-pfx-31415926", "FAKE-tok-27182818", "FAKE-pfx-31415926.FAKE-tok-27182818"} <= set(b["secrets"]))
+        self.assertEqual(b["shown_url"], "https://user:********@api.example.com/x")
+        echo = (200, {"Content-Type": "application/json"}, b'{"prefix": "FAKE-pfx-31415926"}')
+        self.assertRefused(self.main(None, parts, "/x", echo), "FAKE-pfx-31415926")
+
+    def test_r5_a_userinfo_password_is_masked_wherever_a_template_puts_the_scheme_host_or_port(self):
+        for base, pairs, shown in (("{{s}}//amy:Lit-pw-424242@api.example.com", (("s", "https:"),), "https://amy:********@api.example.com/x"),
+                                   ("{{s}}amy:Lit-pw-424242@api.example.com", (("s", "https://"),), "https://amy:********@api.example.com/x"),
+                                   ("https://amy:Lit-pw-424242@api.example.com:{{port}}", (("port", "8443"),), "https://amy:********@api.example.com:8443/x"),
+                                   ("https://amy:Lit-pw-424242@{{host}}:{{port}}", (("host", "api.example.com"), ("port", "8443")),
+                                    "https://amy:********@api.example.com:8443/x"),
+                                   ("{{s}}//amy:pw1@api.example.com", (("s", "https:"),), "https://amy:********@api.example.com/x"),  # short
+                                   ("{{ u }}", (("u", "https://amy:Lit-pw-424242@api.example.com"),), "https://amy:********@api.example.com/x")):
+            env = plain_env(*pairs, base=base)
+            b = self.build(None, env)
+            password = "pw1" if "pw1" in base else "Lit-pw-424242"
+            self.assertEqual(b["shown_url"], shown, base)
+            self.assertEqual(b["url"], shown.replace("amy:********@", ""))
+            self.assertEqual(b["headers"]["Authorization"], "Basic " + postman.base64.b64encode(f"amy:{password}".encode()).decode())
+            self.assertEqual(b["auth"], "basic auth from the base URL as amy")
+            code, out, err, seen = self.main(None, env, "/x", OK_JSON)
+            self.assertEqual(code, 0, err)
+            self.assertEqual(json.loads(out)["url"], shown)
+            self.assertNotIn(password, out)
+        # An @ in the password: the userinfo ends at the last @ before the host, as Postman reads it.
+        b = self.build(None, plain_env(base="https://amy:p@ssw0rd99@api.example.com"))
+        self.assertEqual((b["url"], b["shown_url"]), ("https://api.example.com/x", "https://amy:********@api.example.com/x"))
+        self.assertIn("p@ssw0rd99", b["secrets"])
+
+    def test_r1_a_url_user_with_no_password_is_the_credential(self):
+        token = "FAKE-tok-31415926"
+        for base, shown in ((f"https://{token}@api.example.com", "https://********@api.example.com/x"),
+                            (f"https://{token}:@api.example.com", "https://********:********@api.example.com/x"),
+                            ("https://{{tok}}@api.example.com", "https://********@api.example.com/x")):
+            env = plain_env(("tok", token), base=base)
+            b = self.build(None, env)
+            self.assertEqual((b["shown_url"], b["auth"]), (shown, "basic auth from the base URL as ********"), base)
+            self.assertEqual(b["headers"]["Authorization"], "Basic " + postman.base64.b64encode(f"{token}:".encode()).decode())
+            self.assertIn(token, b["secrets"])
+            code, out, err, seen = self.main(None, env, "/x", OK_JSON)
+            self.assertEqual(code, 0, err)
+            self.assertNotIn(token, out)
+            echo = (200, {"Content-Type": "application/json"}, json.dumps({"user": token}).encode())
+            self.assertRefused(self.main(None, env, "/x", echo), token)
 
     def test_d4_33_every_form_of_one_layer_of_encoding_is_refused(self):
         record = {"url": "https://api.example.com/x", "auth": "none", "request_headers": {}, "response_headers": {}}
@@ -879,7 +1038,7 @@ class EndToEnd(unittest.TestCase):
         self.assertTrue(record["body"].startswith("{"), repr(record["body"][:3]))
         self.assertEqual(json.loads(record["body"]), {"widget": 42, "state": "removed"})
 
-    # Parity with the Insomnia source (see Parity): each test's number is the Insomnia review entry it is modelled on.
+    # Parity with the Insomnia source (see Parity): a d-number is the Insomnia review entry a test is modelled on.
 
     def assertRefusedE2E(self, result, *secrets):
         proc, record, text = result
@@ -888,6 +1047,15 @@ class EndToEnd(unittest.TestCase):
         self.assertIsNone(record)
         for s in secrets:
             self.assertNotIn(s, text)
+
+    def assertRecorded(self, result, *echoed):
+        """call.py wrote the record, and the body shows each of `echoed` as the server returned it: the record."""
+        proc, record, text = result
+        self.assertEqual(proc.returncode, 0, text)
+        self.assertIsNotNone(record, text)
+        for e in echoed:
+            self.assertIn(e, record["body"])
+        return record
 
     @staticmethod
     def served(body):
@@ -903,39 +1071,71 @@ class EndToEnd(unittest.TestCase):
         self.assertRefusedE2E(self.call(self.served('{"scheme": "FAKE-pfx-31415926"}'), host="https://httpbin.org",
                                         auth=apikey("X-Auth", "{{ scheme }} {{ token }}"), env_values=pairs, variables={}), "FAKE-pfx-31415926")
 
-    def test_d1_17_e2e_a_templated_query_parameter_name_is_masked_and_refused_when_echoed(self):
+    def test_r2_17_e2e_a_templated_query_parameter_name_is_shown_and_not_refused_when_echoed(self):
         auth, pairs = apikey("q-{{ qn }}", where="query"), (("qn", "FAKE-qn-27182818"),)
         proc, record, text = self.call("/status/200", host="https://httpbin.org", auth=auth, env_values=pairs, expect=200)
         self.assertEqual(proc.returncode, 0, text)
-        self.assertEqual((record["url"], record["auth"]), ("https://httpbin.org/status/200?q-********=********", "API key in query parameter q-********"))
-        self.assertNotIn("FAKE-qn", json.dumps(record))
-        # The key is too short to check for, so only the parameter's name, echoed in args and url, can refuse the call.
-        self.assertRefusedE2E(self.call("/anything", host="https://httpbin.org", auth=auth, key="k1234", env_values=pairs), "FAKE-qn-27182818")
+        self.assertEqual((record["url"], record["auth"]), ("https://httpbin.org/status/200?q-FAKE-qn-27182818=********",
+                                                           "API key in query parameter q-FAKE-qn-27182818"))
+        self.assertNotIn(self.FAKE, json.dumps(record))
+        # /anything echoes the parameter's name in args and url; the key is too short to check for, so only the name
+        # could refuse the call, and a name is configuration.
+        self.assertRecorded(self.call("/anything", host="https://httpbin.org", auth=auth, key="k1234", env_values=pairs), "q-FAKE-qn-27182818")
 
-    def test_d1_18_e2e_a_templated_header_name_is_masked_and_refused_when_echoed_title_cased(self):
+    def test_r2_r3_18_e2e_a_templated_header_name_is_shown_and_not_refused_when_echoed_title_cased(self):
         auth, pairs = apikey("X-{{ kn }}"), (("kn", "FAKE-kn-16180339"),)
         proc, record, text = self.call("/status/200", host="https://httpbin.org", auth=auth, env_values=pairs, expect=200)
         self.assertEqual(proc.returncode, 0, text)
-        self.assertEqual((record["request_headers"]["X-********"], record["auth"]), ("********", "API key in header X-********"))
-        self.assertNotIn("kn-16180339", json.dumps(record).lower())
-        # httpbin echoes the name as X-Fake-Kn-16180339; the key is too short to check for, so only the name can refuse it.
-        self.assertRefusedE2E(self.call("/headers", host="https://httpbin.org", auth=auth, key="k1234", env_values=pairs))
+        self.assertEqual((record["request_headers"]["X-FAKE-kn-16180339"], record["auth"]), ("********", "API key in header X-FAKE-kn-16180339"))
+        # httpbin echoes the name as X-Fake-Kn-16180339; the key is too short to check for, so only the name could refuse it.
+        self.assertRecorded(self.call("/headers", host="https://httpbin.org", auth=auth, key="k1234", env_values=pairs), "X-Fake-Kn-16180339")
 
-    def test_d2_25_e2e_a_variable_in_the_base_url_is_masked_and_refused_when_echoed(self):
-        self.assertRefusedE2E(self.call("/x", host="https://httpbin.org/anything/{{ fnKey }}", auth=None,
-                                        env_values=(("fnKey", "FAKE-fnkey-8a7b6c5d"),)), "FAKE-fnkey-8a7b6c5d")
-        proc, record, text = self.call("/status/200", host="https://{{ host }}", auth=None, env_values=(("host", "httpbin.org"),), expect=200)
+    def test_r2_25_e2e_a_templated_base_url_is_shown_and_not_refused_when_echoed(self):
+        for host, pairs in (("https://{{ host }}", (("host", "httpbin.org"),)),
+                            ("{{protocol}}://{{host}}", (("protocol", "https"), ("host", "httpbin.org")))):
+            record = self.assertRecorded(self.call("/get", host=host, auth=None, env_values=pairs, expect=200), '"url": "https://httpbin.org/get"')
+            self.assertEqual(record["url"], "https://httpbin.org/get")
+        # An absolute redirect echoes the host lower-cased; the base path, from a variable, is the record's own "status".
+        record = self.call("/absolute-redirect/1", host="https://{{host}}", auth=None, env_values=(("host", "HttpBin.Org"),), expect=302)[1]
+        self.assertEqual((record["url"], record["response_headers"]["Location"]), ("https://HttpBin.Org/absolute-redirect/1", "http://httpbin.org/get"))
+        record = self.call("/200", host="https://httpbin.org/{{section}}", auth=None, env_values=(("section", "status"),), expect=200)[1]
+        self.assertEqual((record["url"], record["status"], record["verdict"]), ("https://httpbin.org/status/200", 200, "PASS"))
+
+    def test_r1_e2e_a_vars_value_in_the_base_url_is_masked_and_refused_when_echoed(self):
+        variables = {"fnKey": "FAKE-fnkey-8a7b6c5d"}  # every --vars value is a secret, wherever it is used
+        self.assertRefusedE2E(self.call("/x", host="https://httpbin.org/anything/{{ fnKey }}", auth=None, variables=variables), "FAKE-fnkey-8a7b6c5d")
+        proc, record, text = self.call("/200", host="https://httpbin.org/status/{{ fnKey }}", auth=None, variables=variables)
+        self.assertEqual(record["url"], "https://httpbin.org/status/********/200", text)  # 404, masked and printed
+        self.assertNotIn("FAKE-fnkey", json.dumps(record))
+
+    def test_r2_e2e_a_templated_basic_auth_user_is_shown_and_not_refused(self):
+        # postman-echo's documented credentials: the user, postman, is also the record's source and part of the host.
+        auth = {"type": "basic", "basic": [{"key": "username", "value": "{{user}}"}, {"key": "password", "value": "{{pass}}"}]}
+        record = self.assertRecorded(self.call("/basic-auth", auth=auth, env_values=(("user", "postman"), ("pass", "password")), variables={},
+                                               expect=200), '"authenticated":true')
+        self.assertEqual((record["auth"], record["request_headers"]["Authorization"]), ("basic auth as postman", "Basic ********"))
+
+    def test_r1_e2e_a_blank_basic_password_sends_the_key_as_the_user(self):
+        auth = {"type": "basic", "basic": [{"key": "username", "value": "{{apiKey}}"}, {"key": "password", "value": ""}]}
+        proc, record, text = self.call("/status/200", host="https://httpbin.org", auth=auth, expect=200)
         self.assertEqual(proc.returncode, 0, text)
-        self.assertEqual(record["url"], "https://********/status/200")
+        self.assertEqual((record["auth"], record["request_headers"]["Authorization"]), ("basic auth as ********", "Basic ********"))
+        self.assertNotIn(self.FAKE, json.dumps(record))
+        # /headers echoes the Authorization header: refused, so the key was sent, as the basic user.
+        self.assertRefusedE2E(self.call("/headers", host="https://httpbin.org", auth=auth), self.FAKE)
 
     def test_d2_26_e2e_a_userinfo_password_is_masked_and_sent_as_basic_auth(self):
         pairs = (("pw", "FAKE-pw-9z8y7x6w"),)
         # /headers echoes the Authorization header: refused, so the password was sent, as basic auth.
         self.assertRefusedE2E(self.call("/headers", host="https://user:{{ pw }}@httpbin.org", auth=None, env_values=pairs), "FAKE-pw-9z8y7x6w")
-        for host in ("https://user:{{ pw }}@httpbin.org", "https://user:Lit-pw-424242@httpbin.org"):
+        pairs += (("s", "https:"), ("port", "443"))  # a template that splits the scheme, or holds the port (R5)
+        shown = "https://user:********@httpbin.org/status/200"
+        for host, url in (("https://user:{{ pw }}@httpbin.org", shown), ("https://user:Lit-pw-424242@httpbin.org", shown),
+                          ("{{s}}//user:Lit-pw-424242@httpbin.org", shown),
+                          ("https://user:Lit-pw-424242@httpbin.org:{{port}}", "https://user:********@httpbin.org:443/status/200")):
             proc, record, text = self.call("/status/200", host=host, auth=None, env_values=pairs, expect=200)
             self.assertEqual(proc.returncode, 0, text)
-            self.assertEqual(record["url"], "https://user:********@httpbin.org/status/200")
+            self.assertEqual(record["url"], url)
             self.assertEqual((record["request_headers"]["Authorization"], record["auth"]), ("Basic ********", "basic auth from the base URL as user"))
             self.assertNotIn("pw-", json.dumps(record))
 

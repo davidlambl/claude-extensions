@@ -7,9 +7,11 @@ Offline tests point the base URL at https://127.0.0.1:1, which refuses at once: 
 failed" got through every check made before sending. Tests that need a response call postman-echo.com or httpbin.org
 with fake secrets, and run only when API_CALL_E2E is set; each retries once on a connection error or a status other
 than the one expected. Test names carry the id of the review finding each covers; r2_NN is attack NN of the second
-review round.
+review round, and r3 marks the third round's narrowed rule: a secret is a value in a credential position (an API
+key's value, a bearer token, a templated header value, a password in the base URL and the basic token from it, with
+every part substituted into each), matched in its own letter case; hosts, paths, names and labels are shown.
 """
-import base64, json, os, re, shutil, subprocess, sys, tempfile, unittest, urllib.parse
+import base64, html, json, os, re, shutil, subprocess, sys, tempfile, time, unittest, urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -52,7 +54,7 @@ def echo_body(body):
     return "/base64/" + base64.urlsafe_b64encode(body).decode("ascii")
 
 
-def write_data(root, base, folders=(), subs=None, certs=()):
+def write_data(root, base, folders=(), subs=None, certs=(), collection="Coll"):
     """Insomnia's data folder: global environment 'Env' (base data, sub-environments), collection 'Coll'."""
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
@@ -63,7 +65,7 @@ def write_data(root, base, folders=(), subs=None, certs=()):
 
     db("insomnia.Workspace.db", [
         {"_id": "wrk_env", "type": "Workspace", "parentId": "proj", "name": "Env", "scope": "environment"},
-        {"_id": "wrk_col", "type": "Workspace", "parentId": "proj", "name": "Coll", "scope": "collection"}])
+        {"_id": "wrk_col", "type": "Workspace", "parentId": "proj", "name": collection, "scope": "collection"}])
     db("insomnia.Environment.db",
        [{"_id": "env_base", "type": "Environment", "parentId": "wrk_env", "name": "Base Environment", "data": base}] +
        [{"_id": f"env_sub{i}", "type": "Environment", "parentId": "env_base", "name": n, "data": d}
@@ -129,7 +131,8 @@ class Case(unittest.TestCase):
 
     def functions(self, body, env=None):
         """Runs body in pwsh with the source's functions loaded from it, and the script-level state they use
-        ($secrets, $vars, $extended, $templateRx, $mark) set as the source sets it; returns the JSON it prints last."""
+        ($secrets, $vars, $extended, $resolved, $longest, $templateRx, $htmlNames) set as the source sets it; returns
+        the JSON it prints last."""
         # ASCII out, so that no console code page can alter what comes back.
         prelude = ("$ErrorActionPreference = 'Stop'\n"
                    "$PSDefaultParameterValues['ConvertTo-Json:EscapeHandling'] = 'EscapeNonAscii'\n"
@@ -139,7 +142,8 @@ class Case(unittest.TestCase):
                    "{ . ([scriptblock]::Create($f.Extent.Text)) }\n"
                    "foreach ($s in $ast.EndBlock.Statements) { if ($s -is [Management.Automation.Language.AssignmentStatementAst] -and "
                    "$s.Left -is [Management.Automation.Language.VariableExpressionAst] -and "
-                   "$s.Left.VariablePath.UserPath -in 'secrets', 'vars', 'extended', 'templateRx', 'mark') "
+                   "$s.Left.VariablePath.UserPath -in 'secrets', 'vars', 'extended', 'resolved', 'longest', 'templateRx', "
+                   "'htmlNames') "
                    "{ . ([scriptblock]::Create($s.Extent.Text)) } }\n")
         encoded = base64.b64encode((prelude + body).encode("utf-16-le")).decode("ascii")
         proc = subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], capture_output=True,
@@ -147,6 +151,20 @@ class Case(unittest.TestCase):
         out = proc.stdout.decode("utf-8", "replace")
         self.assertEqual(proc.returncode, 0, out + proc.stderr.decode("utf-8", "replace"))
         return json.loads(out.strip().splitlines()[-1])
+
+    def exposed(self, cases):
+        """Test-Exposed on each (label, text, secret), handed to pwsh as JSON: {label: whether the secret shows}."""
+        return self.functions(r"""
+            $out = [ordered]@{}
+            foreach ($c in @($env:CASES | ConvertFrom-Json)) { $out[$c[0]] = Test-Exposed @($c[1]) @($c[2]) }
+            $out | ConvertTo-Json -Compress
+        """, env={"CASES": json.dumps(cases)})
+
+    def timed_call(self, *args, **kw):
+        """call, and how many seconds it took."""
+        start = time.monotonic()
+        r = self.call(*args, **kw)
+        return r, time.monotonic() - start
 
 
 class Refusal(Case):
@@ -190,7 +208,7 @@ class Refusal(Case):
 
     @needs_network
     def test_docs_1_non_ascii_query_key_echoed_escaped_is_refused(self):
-        # httpbin (Flask) writes JSON with non-ASCII escaped: the key comes back as fake-ü-1234567.
+        # httpbin (Flask) writes JSON with non-ASCII escaped: the key comes back as fake-\u00fc-1234567.
         key = "fake-ü-1234567"
         self.data({"baseUrl": HTTPBIN, "apiKey": key}, [folder("API", apikey("key", add_to="queryParams"))])
         self.assertRefused(self.call("/anything", expect=200, network=True), key)
@@ -215,8 +233,8 @@ class Refusal(Case):
                 @('url-encoded', 'https://h/x?key=abc%2Bdef%2Fghi12%3D%3D', 'abc+def/ghi12=='),
                 @('url-encoded lower case', 'https://h/x?key=abc%2bdef%2fghi12%3d%3d', 'abc+def/ghi12=='),
                 @('plus for space', 'q=my+secret+value', 'my secret value'),
-                @('json \u escape', '{"error":"invalid key abc+def\/ghi12=="}', 'abc+def/ghi12=='),
-                @('json non-ascii escape', '{"key":"fake-ü-1234567"}', "fake-$([char]0xfc)-1234567"),
+                @('json \u escape', ('{"error":"invalid key abc' + [char]0x5c + 'u002Bdef\/ghi12=="}'), 'abc+def/ghi12=='),
+                @('json non-ascii escape', ('{"key":"fake-' + [char]0x5c + 'u00fc-1234567"}'), "fake-$([char]0xfc)-1234567"),
                 @('json quote escape', '{"k":"pa\"ss\\word1"}', 'pa"ss\word1'),
                 @('json escaped url', '{"url":"https:\/\/h\/x?key=abc%2Bdef%2Fghi12%3D%3D"}', 'abc+def/ghi12=='),
                 @('too short', 'abc12', 'abc12'),
@@ -241,12 +259,23 @@ class ErrorMessages(Case):
                 trimmed = Hide-Secrets 'token FAKE-tok-7f3a9c2e rejected' $list
                 lower = Hide-Secrets 'failed: https://h/x?key=abc%2bdef%2fghi12%3d%3d' $list
                 partly = Hide-Secrets 'failed: https://h/x?key=abc+def%2Fghi12==' $list
+                'other case' = Hide-Secrets 'token fake-tok-7f3a9c2e rejected' $list
             } | ConvertTo-Json -Compress
         """)
         self.assertEqual(r["encoded"], "failed: https://h/x?key=********")
         self.assertEqual(r["trimmed"], "token ******** rejected")
         self.assertEqual(r["lower"], "failed: https://h/x?key=********")
         self.assertNotIn("ghi12", r["partly"])
+        # r3: a secret is matched in its own letter case; the same letters in another case are another text
+        self.assertEqual(r["other case"], "token fake-tok-7f3a9c2e rejected")
+
+    def test_r3_a_failure_names_the_templated_host(self):
+        # A host is configuration, not a secret, so the message says which one could not be reached.
+        self.data({"baseUrl": "https://{{ host }}:1", "host": "127.0.0.1"}, [])
+        r = self.call("/x")
+        self.assertReachedSend(r)
+        self.assertIn("127.0.0.1", r.stderr, r)
+        self.assertNotIn("********", r.stderr, r)
 
     def test_correctness_10_error_message_reaches_call_py_as_utf8(self):
         # A single-byte console encoding, as a Windows console's OEM code page is: pwsh must still write UTF-8,
@@ -265,7 +294,7 @@ class Encoding(Case):
         r = self.call("/get?name=caf%C3%A9&check=%E2%9C%93&sep=%E2%80%A8", expect=200, network=True, env=SINGLE_BYTE_CONSOLE)
         self.assertEqual(r.code, 0, r)
         args = json.loads(r.record["body"])["args"]
-        self.assertEqual((args["name"], args["check"], args["sep"]), ("café", "✓", " "))
+        self.assertEqual((args["name"], args["check"], args["sep"]), ("café", "✓", "\u2028"))
 
     @needs_network
     def test_correctness_15_unknown_charset_is_recorded_not_a_failure(self):
@@ -361,6 +390,26 @@ class Auth(Case):
         self.assertEqual(r.code, 1, r)
         self.assertIn("'body', which is not supported", r.stderr, r)
 
+    def test_r3_an_empty_api_key_or_bearer_token_stops_the_call_before_it_is_sent(self):
+        # As in the Postman source: a credential that resolves to an empty value was never supplied, so nothing is
+        # sent, and the message quotes no value. An empty password in the base URL is still sent, beside its user.
+        cases = {"bearer token": (bearer(), {"token": ""}),
+                 "bearer token of empty parts": (bearer("{{ a }}{{ b }}"), {"a": "", "b": None}),
+                 "no bearer token at all": ({"type": "bearer"}, {}),
+                 "API key in a header": (apikey("X-Api-Key"), {"apiKey": ""}),
+                 "API key in a query parameter": (apikey("key", add_to="queryParams"), {"apiKey": ""}),
+                 "API key in a cookie": (apikey("session", add_to="cookie"), {"apiKey": ""})}
+        for label, (auth, env) in cases.items():
+            with self.subTest(label):
+                self.data({"baseUrl": OFFLINE, **env}, [folder("API", auth)])
+                r = self.call("/x")
+                self.assertEqual(r.code, 1, r)
+                self.assertNotIn(SENT, r.stderr, r)
+                what = "bearer token" if "bearer" in label else "API key"
+                self.assertIn(f"the {what} on folder 'API' resolves to an empty value", r.stderr, r)
+        self.data({"baseUrl": "https://FAKE-tok-31415926:@127.0.0.1:1"}, [])
+        self.assertReachedSend(self.call("/x"))
+
 
 class Headers(Case):
     def test_secrets_4_line_break_in_a_folder_header_value_is_refused(self):
@@ -418,14 +467,13 @@ class Values(Case):
 
     @needs_network
     def test_correctness_19_boolean_and_number_variables_render_as_insomnia_does(self):
-        # A templated part of a header name is a secret, masked in the record; the echo shows what was sent. Each
-        # value is under six characters, so its echo is not refused.
+        # A header name is configuration (r3): the record shows it resolved, as the echo does.
         self.data({"baseUrl": ECHO, "debug": True, "ratio": 1.10, "count": 3},
                   [folder("API", headers=[("X-Debug-{{ debug }}", "1"), ("X-Ratio-{{ ratio }}", "1"), ("X-N-{{ count }}", "1")])])
         r = self.call("/headers", "--folder", "API", expect=200, network=True)
         self.assertEqual(r.code, 0, r)
         self.assertEqual([k for k in r.record["request_headers"] if k.startswith("X-")],
-                         ["X-Debug-********", "X-Ratio-********", "X-N-********"])
+                         ["X-Debug-true", "X-Ratio-1.1", "X-N-3"])
         received = json.loads(r.record["body"])["headers"]
         for name in ("x-debug-true", "x-ratio-1.1", "x-n-3"):
             self.assertIn(name, received)
@@ -587,6 +635,39 @@ class SelfExtension(Case):
         self.assertEqual(r.code, 1, r)
         self.assertIn("variable 'token' in 'Env' nests templates more than five deep, or refers to itself", r.stderr, r)
 
+    def test_r3_an_extension_reads_the_other_values_of_its_layer_on_every_run(self):
+        # The layer's other values are laid before its extensions are resolved, whatever order a hashtable would
+        # give: section, defined only beside the extension, is always there. Each run is a new pwsh, with a new
+        # string hash seed.
+        self.data({"baseUrl": OFFLINE}, [], subs={"Test": {"baseUrl": "{{ baseUrl }}/{{ section }}", "section": "bytes"}})
+        for run in range(6):
+            with self.subTest(run=run):
+                self.assertReachedSend(self.call("/201", "--env", "Env/Test"))
+
+    @needs_network
+    def test_r3_an_extension_uses_its_own_layer_value_on_every_run(self):
+        self.data({"baseUrl": HTTPBIN, "section": "status"}, [],
+                  subs={"Test": {"baseUrl": "{{ baseUrl }}/{{ section }}", "section": "anything"}})
+        for run in range(3):
+            with self.subTest(run=run):
+                r = self.call("/x", "--env", "Env/Test", expect=200, network=True)
+                self.assertEqual(r.code, 0, r)
+                self.assertEqual(r.record["url"], HTTPBIN + "/anything/x")
+
+    def test_r3_extensions_in_one_layer_resolve_in_the_file_order(self):
+        # Two extensions that name each other: the first in the file reads the second as it was beneath; the second
+        # reads the first as extended. A later layer's value does not change an extension already resolved.
+        r = self.functions(r"""
+            $data = [Text.Json.JsonDocument]::Parse($env:LAYERS)
+            $layers = ConvertFrom-JsonElement $data.RootElement
+            foreach ($layer in $layers) { Add-Layer $layer }
+            [ordered]@{ a = (Get-Variable 'a' 'a' 1).Value; b = (Get-Variable 'b' 'b' 1).Value; c = (Get-Variable 'c' 'c' 1).Value;
+                        keys = @($layers[1].Keys) } | ConvertTo-Json -Compress
+        """, env={"LAYERS": '[{"a": "A", "b": "B", "v": "1"}, {"b": "{{ b }}-{{ a }}", "a": "{{ a }}-{{ b }}", '
+                            '"c": "{{ v }}"}, {"a": "{{ a }}+", "v": "2"}]'})
+        self.assertEqual(r["keys"], ["b", "a", "c"])
+        self.assertEqual((r["a"], r["b"], r["c"]), ("A-B-A+", "B-A", "2"))
+
 
 class CaseSensitiveNames(Case):
     """Round 2, attack 36 (D5): variable names are case-sensitive, as in Insomnia."""
@@ -604,82 +685,111 @@ class CaseSensitiveNames(Case):
         self.assertEqual(r.code, 0, r)
         self.assertEqual(json.loads(r.record["body"])["headers"]["x-api-key"], "pub12")
 
+    def test_r3_the_default_base_url_variable_finds_one_spelt_in_another_case(self):
+        for name in ("baseURL", "BaseUrl"):
+            with self.subTest(name=name):
+                self.data({name: OFFLINE}, [])
+                self.assertReachedSend(self.call("/x"))
+
+    def test_r3_the_default_base_url_variable_needs_a_single_match(self):
+        self.data({"baseURL": OFFLINE, "BaseUrl": OFFLINE}, [])
+        r = self.call("/x")
+        self.assertEqual(r.code, 1, r)
+        self.assertNotIn(SENT, r.stderr, r)
+        self.assertIn("has no 'baseUrl' variable; variable names are case-sensitive, and it has 'BaseUrl' and 'baseURL'",
+                      r.stderr, r)
+
+    def test_r3_a_named_base_url_variable_and_other_templates_stay_case_sensitive(self):
+        self.data({"ApiUrl": OFFLINE}, [])
+        r = self.call("/x", "--base-url-var", "apiUrl")
+        self.assertEqual(r.code, 1, r)
+        self.assertIn("has no 'apiUrl' variable; variable names are case-sensitive, and it has 'ApiUrl'", r.stderr, r)
+        self.data({"baseUrl": "https://{{ host }}:1", "Host": "127.0.0.1"}, [])
+        r = self.call("/x")
+        self.assertEqual(r.code, 1, r)
+        self.assertIn("variable 'host' is not in environment 'Env'", r.stderr, r)
+
 
 class TemplatedNames(Case):
-    """Round 2, attacks 16, 17 and 18 (D1): a templated part of a header name, of an API key's name or of the bearer
-    prefix is a secret: masked in the record, and refused when echoed, in whatever case the server echoes it."""
+    """Round 3, R2 (rewriting round 2's attacks 16, 17 and 18): a header name, an API key's name and the bearer prefix
+    are configuration, not secrets, even when a variable fills them: the record shows them resolved, and a response
+    that echoes them, in its own letter case or another, is printed. The values beside them stay secrets."""
 
-    ENV = {"baseUrl": ECHO, "token": "FAKE-tok-7f3a9c2e", "apiKey": "FAKE-key-4b8d2e61", "scheme": "FAKE-pfx-31415926",
+    # The token and the key are under six characters, so that their own echo is not refused: only a name or the
+    # prefix could be.
+    ENV = {"baseUrl": ECHO, "token": "tk123", "apiKey": "ak123", "scheme": "FAKE-pfx-31415926",
            "hn": "FAKE-hn-27182818", "kn": "FAKE-kn-16180339"}
 
-    def test_r2_17_resolve_shown_masks_and_registers_each_part(self):
-        r = self.functions(r"""
-            $vars['hn'] = 'FAKE-hn-27182818'; $vars['v'] = '2'
-            $n = Resolve-Shown 'X-{{ hn }}-v{{ v }}'
-            [ordered]@{ value = $n.Value; shown = (Format-Shown $n.Shown); secrets = @($secrets) } | ConvertTo-Json -Compress
-        """)
-        self.assertEqual((r["value"], r["shown"]), ("X-FAKE-hn-27182818-v2", "X-********-v********"))
-        self.assertIn("FAKE-hn-27182818", r["secrets"])
-
     @needs_network
-    def test_r2_16_17_18_templated_names_and_prefix_are_masked_in_the_record(self):
+    def test_r3_templated_names_and_prefix_are_shown_and_echoed_freely(self):
+        # postman-echo's /headers echoes every header, its name lower-cased, and the query string is not echoed.
         cases = {
-            "bearer prefix": (dict(bearer(), prefix="{{ scheme }}"), [],
-                              {"auth": "bearer token"}, {"Authorization": "******** ********"}),
-            "header name": (bearer(), [("X-{{ hn }}", "literal")], {}, {"X-********": "literal"}),
-            "API key name": (apikey("X-{{ kn }}"), [], {"auth": "API key in header X-********"}, {"X-********": "********"}),
+            "bearer prefix": (dict(bearer(), prefix="{{ scheme }}"), [], {"auth": "bearer token"},
+                              {"Authorization": "FAKE-pfx-31415926 ********"}, ("authorization", "FAKE-pfx-31415926 tk123")),
+            "header name": (bearer(), [("X-{{ hn }}", "literal")], {}, {"X-FAKE-hn-27182818": "literal"},
+                            ("x-fake-hn-27182818", "literal")),
+            "API key name": (apikey("X-{{ kn }}"), [], {"auth": "API key in header X-FAKE-kn-16180339"},
+                             {"X-FAKE-kn-16180339": "********"}, ("x-fake-kn-16180339", "ak123")),
             "API key name in a query": (apikey("{{ kn }}", add_to="queryParams"), [],
-                                        {"auth": "API key in query parameter ********",
-                                         "url": ECHO + "/status/200?********=********"}, {}),
+                                        {"auth": "API key in query parameter FAKE-kn-16180339",
+                                         "url": ECHO + "/headers?FAKE-kn-16180339=********"}, {}, None),
             "API key name in a cookie": (apikey("{{ kn }}", add_to="cookie"), [],
-                                         {"auth": "API key in cookie ********"}, {"Cookie": "********=********"}),
+                                         {"auth": "API key in cookie FAKE-kn-16180339"},
+                                         {"Cookie": "FAKE-kn-16180339=********"}, ("cookie", "FAKE-kn-16180339=ak123")),
         }
-        for label, (auth, headers, fields, shown) in cases.items():
+        for label, (auth, headers, fields, shown, echoed) in cases.items():
             with self.subTest(label):
                 self.data(self.ENV, [folder("API", auth, headers=headers)])
-                r = self.call("/status/200", expect=200, network=True)
+                r = self.call("/headers", expect=200, network=True)
                 self.assertEqual(r.code, 0, r)
                 for field, value in fields.items():
                     self.assertEqual(r.record[field], value)
                 for name, value in shown.items():
                     self.assertEqual(r.record["request_headers"].get(name), value, r.record["request_headers"])
-                for name, secret in self.ENV.items():
-                    if name != "baseUrl":
-                        self.assertNotIn(secret.lower(), r.files.lower())
+                if echoed:
+                    self.assertEqual(json.loads(r.record["body"])["headers"].get(echoed[0]), echoed[1])
 
     @needs_network
-    def test_r2_16_17_18_templated_names_and_prefix_echoed_are_refused(self):
-        # postman-echo echoes header names lower-cased. The token and key are under six characters, so that only the
-        # templated name or prefix can be what is refused.
-        env = dict(self.ENV, token="tk123", apiKey="ak123")
-        cases = {"bearer prefix": (dict(bearer(), prefix="{{ scheme }}"), [], "FAKE-pfx-31415926"),
-                 "header name": ({}, [("X-{{ hn }}", "literal")], "FAKE-hn-27182818"),
-                 "API key name": (apikey("X-{{ kn }}"), [], "FAKE-kn-16180339")}
-        for label, (auth, headers, secret) in cases.items():
-            with self.subTest(label):
-                self.data(env, [folder("API", auth, headers=headers)])
-                r = self.call("/headers", "--folder", "API", expect=200, network=True)
-                self.assertRefused(r, secret)
-                self.assertNotIn(secret.lower(), (r.stdout + r.stderr + r.files).lower())
+    def test_r3_a_templated_header_value_is_still_a_secret(self):
+        # Beside a shown name, a value a variable fills is a secret, whole and in its parts.
+        self.data(dict(self.ENV, flag="FAKE-flag-1a2b3c4d"), [folder("API", headers=[("X-{{ hn }}", "v-{{ flag }}")])])
+        r = self.call("/headers", "--folder", "API", expect=200, network=True)
+        self.assertRefused(r, "FAKE-flag-1a2b3c4d")
 
 
 class BaseUrl(Case):
-    """Round 2, attacks 25 and 26 (D2): the base URL's own text is shown; a value substituted into it is masked in the
-    record's url and refused when echoed; a password in its userinfo is masked whatever its source."""
+    """Round 3, R2 and R5 (rewriting round 2's attacks 25 and 26): the base URL is configuration, shown resolved and
+    printed when a response echoes it, its scheme, host, port and path included, whatever variables fill them; only
+    a password in its userinfo is a secret, typed or templated, with every part substituted into it. The password is
+    found on the URL's text, so no template in the scheme, host or port can make it show."""
 
     @needs_network
-    def test_r2_25_key_in_the_base_url_echoed_is_refused(self):
-        self.data({"baseUrl": HTTPBIN + "/anything/{{ fnKey }}", "fnKey": "FAKE-fnkey-8a7b6c5d"}, [])
-        self.assertRefused(self.call("/x", expect=200, network=True), "FAKE-fnkey-8a7b6c5d")
-
-    @needs_network
-    def test_r2_25_value_substituted_into_the_base_url_is_masked_in_the_record(self):
-        # .NET lower-cases the host it sends; the record shows the base URL's own text, with the part masked.
-        self.data({"baseUrl": "https://{{ host }}/status", "host": "HttpBin.org"}, [])
-        r = self.call("/204", expect=204, network=True)
+    def test_r3_a_variable_in_the_base_url_path_is_shown_and_echoed_freely(self):
+        self.data({"baseUrl": HTTPBIN + "/anything/{{ section }}", "section": "FAKE-section-8a7b6c5d"}, [])
+        r = self.call("/x", expect=200, network=True)
         self.assertEqual(r.code, 0, r)
-        self.assertEqual(r.record["url"], "https://********/status/204")
-        self.assertNotIn("httpbin.org", r.files.lower())
+        self.assertEqual(r.record["url"], HTTPBIN + "/anything/FAKE-section-8a7b6c5d/x")
+        self.assertIn("FAKE-section-8a7b6c5d", json.loads(r.record["body"])["url"])
+
+    @needs_network
+    def test_r3_templated_scheme_host_and_path_are_shown_and_echoed_freely(self):
+        # .NET lower-cases the host it sends, and the record shows the URL sent. /get and /anything echo the host and
+        # the URL; an absolute redirect names the host in its Location.
+        cases = {"host": ({"baseUrl": "https://{{ host }}", "host": "HttpBin.org"}, "/get", 200, HTTPBIN + "/get"),
+                 "nested host": ({"baseUrl": "https://{{ h }}", "h": "{{ sub }}.org", "sub": "httpbin"}, "/get", 200,
+                                 HTTPBIN + "/get"),
+                 "scheme, host and path": ({"baseUrl": "{{ scheme }}://{{ host }}{{ base_path }}", "scheme": "https",
+                                            "host": "httpbin.org", "base_path": "/anything/api"}, "/v1", 200,
+                                           HTTPBIN + "/anything/api/v1"),
+                 "redirect": ({"baseUrl": "https://{{ host }}", "host": "httpbin.org"}, "/absolute-redirect/1", 302,
+                              HTTPBIN + "/absolute-redirect/1")}
+        for label, (env, path, status, url) in cases.items():
+            with self.subTest(label):
+                self.data(env, [])
+                r = self.call(path, expect=status, network=True)
+                self.assertEqual(r.code, 0, r)
+                self.assertEqual(r.record["url"], url)
+                self.assertIn("httpbin.org", r.record["body"] + r.record["response_headers"].get("Location", ""))
 
     @needs_network
     def test_r2_26_password_in_the_base_url_userinfo_is_masked(self):
@@ -693,10 +803,153 @@ class BaseUrl(Case):
                 self.assertNotIn(password, r.files)
 
     @needs_network
+    def test_r3_password_is_masked_whatever_fills_the_scheme_host_or_port(self):
+        # pw1 is under six characters, so only the masking keeps it out of the record: the refusal would not.
+        env = {"port": "443", "host": "httpbin.org", "s": "https://"}
+        for base, password in (("https://amy:pw1@httpbin.org:{{ port }}", "pw1"),
+                               ("{{ s }}amy:pw1@httpbin.org", "pw1"),
+                               ("https://amy:hunter2pass@{{ host }}:{{ port }}", "hunter2pass")):
+            with self.subTest(base=base):
+                self.data({"baseUrl": base, **env}, [])
+                r = self.call("/status/204", expect=204, network=True)
+                self.assertEqual(r.code, 0, r)
+                self.assertEqual(r.record["url"], "https://amy:********@httpbin.org/status/204")
+                self.assertEqual(r.record["auth"], "basic auth from the base URL as amy")
+                self.assertNotIn(":" + password + "@", r.files)
+                self.assertNotIn(password, r.record["url"] + r.record["auth"])
+
+    def test_r3_the_userinfo_is_split_on_the_text_by_its_last_at(self):
+        # In any culture: Thai collation ignores punctuation, so a search for '@' as a string would match anywhere.
+        for culture in ("en_US.UTF-8", "th_TH.UTF-8"):
+            with self.subTest(culture=culture):
+                self.check_userinfo_split({"LC_ALL": culture, "LANG": culture})
+
+    def test_r3_userinfo_and_a_bare_path_reach_the_send_in_a_thai_culture(self):
+        thai = {"LC_ALL": "th_TH.UTF-8", "LANG": "th_TH.UTF-8"}
+        for base in (OFFLINE, "https://amy:FAKE-pw-9z8y7x6w@127.0.0.1:1"):
+            with self.subTest(base=base):
+                self.data({"baseUrl": base}, [])
+                self.assertReachedSend(self.call("x", env=thai))
+
+    def check_userinfo_split(self, env):
+        r = self.functions(r"""
+            $out = [ordered]@{}
+            foreach ($u in 'https://amy:pw@h/x', 'https://:hunter2pass@h', 'https://amy:p@ssw0rd99@h', 'https://amy@h/x',
+                    'https://h/x@y', 'https://amy:p@ss@h:8443/x?y=@z#@', 'https://h?x=a:b@c', 'https://@h', 'https://h') {
+                $s = Split-BaseUrl $u
+                $out[$u] = @($s.Url, $s.User, $s.Password, $s.PasswordAt)
+            }
+            $out | ConvertTo-Json -Compress
+        """, env=env)
+        self.assertEqual(r, {"https://h": ["https://h", None, None, -1],
+                             "https://amy:pw@h/x": ["https://h/x", "amy", "pw", 12],
+                             "https://:hunter2pass@h": ["https://h", "", "hunter2pass", 9],
+                             "https://amy:p@ssw0rd99@h": ["https://h", "amy", "p@ssw0rd99", 12],
+                             "https://amy@h/x": ["https://h/x", "amy", None, -1],
+                             "https://h/x@y": ["https://h/x@y", None, None, -1],
+                             "https://amy:p@ss@h:8443/x?y=@z#@": ["https://h:8443/x?y=@z#@", "amy", "p@ss", 12],
+                             "https://h?x=a:b@c": ["https://h?x=a:b@c", None, None, -1],
+                             "https://@h": ["https://h", "", None, -1]})
+
+    def test_r3_the_parts_inside_the_password_are_secrets_and_the_rest_are_not(self):
+        # creds runs across the start of the password: of it, only the piece inside counts, and of its own parts,
+        # those inside that piece. The host is outside the password, so it is not a secret.
+        r = self.functions(r"""
+            $vars['host'] = 'httpbin.org'; $vars['creds'] = 'amy:{{ pw }}'; $vars['pw'] = 'FAKE-{{ mid }}-x'
+            $vars['mid'] = 'inner-LEAF-0042'; $vars['ver'] = 'v1'
+            $b = Resolve-Template 'https://{{ creds }}@{{ host }}/{{ ver }}'
+            $s = Split-BaseUrl $b.Value
+            $within = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            Add-PartsWithin $b $s.PasswordAt ($s.PasswordAt + $s.Password.Length) $within
+            $parts = [string[]]@($within); [Array]::Sort($parts, [StringComparer]::Ordinal)
+            [ordered]@{ password = $s.Password; within = $parts; url = $s.Url } | ConvertTo-Json -Compress
+        """)
+        self.assertEqual(r["password"], "FAKE-inner-LEAF-0042-x")
+        self.assertEqual(r["within"], ["FAKE-inner-LEAF-0042-x", "inner-LEAF-0042"])
+        self.assertEqual(r["url"], "https://httpbin.org/v1")
+
+    @needs_network
+    def test_r3_a_nested_part_of_the_password_echoed_is_refused_and_the_host_is_not(self):
+        env = {"baseUrl": "https://{{ creds }}@{{ host }}", "creds": "amy:{{ pw }}", "pw": "FAKE-{{ mid }}-x",
+               "mid": "inner-LEAF-0042", "host": "httpbin.org"}
+        self.data(env, [])
+        self.assertRefused(self.call(echo_body(b'{"m":"inner-LEAF-0042"}'), expect=200, network=True), "inner-LEAF-0042")
+        # not /get, which would echo the basic token, a secret too
+        path = echo_body(b'{"host":"httpbin.org","user":"amy"}')
+        r = self.call(path, expect=200, network=True)
+        self.assertEqual(r.code, 0, r)
+        self.assertEqual(r.record["url"], "https://amy:********@httpbin.org" + path)
+
+    @needs_network
+    def test_r3_a_templated_user_is_shown_and_echoed_freely(self):
+        # httpbin answers 200 only when the basic auth arrives, and echoes the user. pw123 is under six characters,
+        # so that the path, which must name it, is not refused.
+        self.data({"baseUrl": "https://{{ user }}:{{ pw }}@httpbin.org", "user": "amyuser1", "pw": "pw123"}, [])
+        r = self.call("/basic-auth/amyuser1/pw123", expect=200, network=True)
+        self.assertEqual(r.code, 0, r)
+        self.assertEqual(r.record["auth"], "basic auth from the base URL as amyuser1")
+        self.assertEqual(r.record["url"], "https://amyuser1:********@httpbin.org/basic-auth/amyuser1/pw123")
+        self.assertEqual(json.loads(r.record["body"]), {"authenticated": True, "user": "amyuser1"})
+
+    @needs_network
+    def test_r3_a_password_holding_an_unencoded_at_is_sent(self):
+        # As Postman parses it: the userinfo ends at the last @ before the host.
+        self.data({"baseUrl": "https://amy:p@ss1@httpbin.org"}, [])
+        r = self.call("/basic-auth/amy/p@ss1", expect=200, network=True)
+        self.assertEqual(r.code, 0, r)
+        self.assertEqual(r.record["url"], "https://amy:********@httpbin.org/basic-auth/amy/p@ss1")
+        self.assertEqual(json.loads(r.record["body"]), {"authenticated": True, "user": "amy"})
+
+    def test_r3_an_empty_user_reaches_the_send(self):
+        self.data({"baseUrl": "https://:hunter2pass@127.0.0.1:1"}, [])
+        r = self.call("/x")
+        self.assertReachedSend(r)
+        self.assertNotIn("hunter2pass", r.stderr)
+
+    @needs_network
+    def test_r3_an_empty_user_is_sent_as_basic_auth(self):
+        # The basic token for ":p1" is OnAx, under six characters, so its echo is printed and shows what was sent.
+        self.data({"baseUrl": "https://:p1@httpbin.org"}, [])
+        r = self.call("/headers", expect=200, network=True)
+        self.assertEqual(r.code, 0, r)
+        self.assertEqual(r.record["url"], "https://:********@httpbin.org/headers")
+        self.assertEqual(r.record["auth"], "basic auth from the base URL, with an empty user")
+        self.assertEqual(json.loads(r.record["body"])["headers"]["Authorization"], "Basic " + base64.b64encode(b":p1").decode())
+
+    @needs_network
     def test_r2_26_password_in_the_base_url_userinfo_echoed_is_refused(self):
         self.data({"baseUrl": "https://user:FAKE-pw-literal-41@httpbin.org"}, [])
         self.assertRefused(self.call(echo_body(b'{"pw":"FAKE-pw-literal-41"}'), expect=200, network=True),
                            "FAKE-pw-literal-41")
+
+    @needs_network
+    def test_r3_a_user_with_no_password_is_the_credential(self):
+        # https://TOKEN@host, as GitHub takes a token for the user: with no password, or an empty one, the user is the
+        # credential, masked in the url and the auth and refused when a response echoes it, as in the Postman source.
+        # Beside a password the user is shown (see test_r3_a_templated_user_is_shown_and_echoed_freely).
+        token = "FAKE-tok-31415926"
+        for base, url in (("https://{{ tok }}@httpbin.org", "https://********@httpbin.org/status/200"),
+                          (f"https://{token}@httpbin.org", "https://********@httpbin.org/status/200"),
+                          (f"https://{token}:@httpbin.org", "https://********:********@httpbin.org/status/200")):
+            with self.subTest(base=base):
+                self.data({"baseUrl": base, "tok": token}, [])
+                r = self.call("/status/200", expect=200, network=True)
+                self.assertEqual(r.code, 0, r)
+                self.assertEqual((r.record["url"], r.record["auth"]), (url, "basic auth from the base URL as ********"))
+                self.assertEqual(r.record["request_headers"]["Authorization"], "Basic ********")
+                self.assertNotIn(token, r.files)
+                self.assertRefused(self.call(echo_body(b'{"user":"FAKE-tok-31415926"}'), expect=200, network=True), token)
+
+    @needs_network
+    def test_r3_the_parts_of_a_user_with_no_password_are_secrets_and_the_host_is_not(self):
+        env = {"baseUrl": "https://{{ creds }}@{{ host }}", "creds": "FAKE-{{ mid }}-x", "mid": "inner-LEAF-0042",
+               "host": "httpbin.org"}
+        self.data(env, [])
+        self.assertRefused(self.call(echo_body(b'{"m":"inner-LEAF-0042"}'), expect=200, network=True), "inner-LEAF-0042")
+        path = echo_body(b'{"host":"httpbin.org"}')
+        r = self.call(path, expect=200, network=True)
+        self.assertEqual(r.code, 0, r)
+        self.assertEqual(r.record["url"], "https://********@httpbin.org" + path)
 
 
     @needs_network
@@ -768,7 +1021,6 @@ class HtmlReferences(Case):
                 @('json-escaped reference', '{"k":"&#70;AKEsecret123"}', 'FAKEsecret123'),
                 @('markup', 'a&lt;b&gt;c&amp;d&quot;e&apos;f', "a<b>c&d`"e'f"),
                 @('location re-encoded', 'https://example.com/?k=%5Cu0046%5Cu0041KEsecret123', 'FAKEsecret123'),
-                @('header name lower-cased', 'x-fake-hn-27182818: 1', 'FAKE-hn-27182818'),
                 @('out of range', '&#x110000;&#0;&#xD800;&#99999999999;', 'FAKEsecret123')
             )
             $out = [ordered]@{}
@@ -779,10 +1031,45 @@ class HtmlReferences(Case):
         expected["out of range"] = False
         self.assertEqual(found, expected)
 
+    # (label, text, secret): each text an echo in HTML character references; Python's html.unescape, which the
+    # Postman source uses, says whether the secret shows in it.
+    HTML_CASES = [
+        ("lowbar", "FAKE&lowbar;tok&lowbar;abcdef123", "FAKE_tok_abcdef123"),
+        ("period", "eyJhbGci&period;eyJzdWIi&period;sig12345", "eyJhbGci.eyJzdWIi.sig12345"),
+        ("colon", "user&colon;pass123456", "user:pass123456"),
+        ("commat and excl", "p&commat;ss&excl;word9", "p@ss!word9"),
+        ("the rest of ASCII punctuation", "&num;&dollar;&percnt;&lpar;&rpar;&ast;&midast;&comma;&semi;&quest;&lbrack;"
+         "&lsqb;&bsol;&rbrack;&rsqb;&Hat;&grave;&DiacriticalGrave;&lbrace;&lcub;&verbar;&vert;&VerticalLine;&rbrace;"
+         "&rcub;&UnderBar;&Tab;&NewLine;&fjlig;", "#$%()**,;?[[\\]]^``{{|||}}_\t\nfj"),
+        ("capitalised", "abc&AMP;def&LT;g&GT;h&QUOT;i", 'abc&def<g>h"i'),
+        ("legacy without a semicolon", "abc&AMPdef&LTg&GThi&QUOTj", 'abc&def<g>hi"j'),
+        ("legacy leading a longer name", "abc&ampxyz123;", "abc&xyz123;"),
+        ("zero-padded decimal", "FAKE_tok_&#000000097;bcdef123", "FAKE_tok_abcdef123"),
+        ("zero-padded hex", "&#x0000000046;AKE_tok_abc", "FAKE_tok_abc"),
+        ("an HTML 4 name", "fake-&uuml;-1234567", "fake-\u00fc-1234567"),
+        ("an HTML 4 name in capitals", "FAKE-&Uuml;-1234567", "FAKE-\u00dc-1234567"),
+        ("Colon is not a colon", "user&Colon;pass123456", "user:pass123456"),
+        ("lowbar needs its semicolon", "FAKE&lowbartok_abc", "FAKE_tok_abc"),
+        ("names are case-sensitive", "FAKE&LOWBAR;tok_abc", "FAKE_tok_abc"),
+    ]
+
+    def test_r3_every_html_reference_to_ascii_is_decoded_as_python_decodes_it(self):
+        found = self.exposed(self.HTML_CASES)
+        expected = {label: secret in html.unescape(text) for label, text, secret in self.HTML_CASES}
+        self.assertEqual(found, expected)
+        self.assertEqual(list(expected.values()).count(False), 3)  # the last three, which no reader decodes
+
     @needs_network
     def test_r2_33_html_reference_echo_is_refused(self):
         self.data({"baseUrl": HTTPBIN, "apiKey": "FAKEsecret123"}, [folder("API", apikey("X-Api-Key"))])
         self.assertRefused(self.call(echo_body(b'{"k":"&#70;AKEsecret123"}'), expect=200, network=True), "FAKEsecret123")
+
+    @needs_network
+    def test_r3_named_and_zero_padded_reference_echoes_are_refused(self):
+        self.data({"baseUrl": HTTPBIN, "apiKey": "FAKE_tok_abcdef123"}, [folder("API", apikey("X-Api-Key"))])
+        for body in (b"FAKE&lowbar;tok&UnderBar;abcdef123", b"FAKE_tok_&#000000097;bcdef123"):
+            with self.subTest(body=body):
+                self.assertRefused(self.call(echo_body(body), expect=200, network=True), "FAKE_tok_abcdef123")
 
     @needs_network
     def test_location_with_a_json_escaped_key_reencoded_by_dotnet_is_refused(self):
@@ -791,6 +1078,84 @@ class HtmlReferences(Case):
         self.data({"baseUrl": HTTPBIN, "apiKey": key}, [folder("API", apikey("X-Api-Key"))])
         path = "/redirect-to?" + urllib.parse.urlencode({"url": target, "status_code": 302})
         self.assertRefused(self.call(path, expect=302, network=True), key)
+
+
+class LetterCase(Case):
+    """Round 3, R3 and R2: a secret is found in its own letter case only, and the record's labels (environment,
+    collection and folder names) are never a reason to refuse, so an ordinary word a variable holds does not stop a
+    run where another text spells it in another case, or where a label is that word."""
+
+    def test_r3_a_secret_is_matched_in_its_own_letter_case(self):
+        found = self.exposed([("exact", '{"t":"DEEPsecret3d"}', "DEEPsecret3d"),
+                              ("upper-cased", '{"t":"DEEPSECRET3D"}', "DEEPsecret3d"),
+                              ("lower-cased", "x-fake-hn-27182818: 1", "FAKE-hn-27182818"),
+                              ("capitalised", "Env/Staging", "staging"),
+                              ("percent-encoded, lower-case hex", "k=abc%2bdef%2fghi12", "abc+def/ghi12")])
+        self.assertEqual(found, {"exact": True, "upper-cased": False, "lower-cased": False, "capitalised": False,
+                                 "percent-encoded, lower-case hex": True})
+
+    @needs_network
+    def test_r3_a_word_in_another_letter_case_is_not_refused(self):
+        # /json and the /base64 bodies never hold the header values in their own case.
+        cases = {"sub-environment": ({"stage": "staging"}, [("X-Environment", "{{ stage }}")], {"Staging": {}},
+                                     ("--env", "Env/Staging"), "/json", "Coll"),
+                 "collection": ({"tenant": "contoso"}, [("X-Tenant", "{{ tenant }}")], None,
+                                ("--collection", "Contoso API"), "/json", "Contoso API"),
+                 "body": ({"channel": "online"}, [("X-Channel", "{{ channel }}")], None, (),
+                          echo_body(b'{"status":"Online"}'), "Coll")}
+        for label, (env, headers, subs, options, path, collection) in cases.items():
+            with self.subTest(label):
+                self.data({"baseUrl": HTTPBIN, **env}, [folder("API", headers=headers)], subs=subs, collection=collection)
+                r = self.call(path, "--folder", "API", *options, expect=200, network=True)
+                self.assertEqual(r.code, 0, r)
+
+    @needs_network
+    def test_r3_labels_are_never_a_reason_to_refuse(self):
+        # Each templated header value, a secret, is spelt exactly as a label of the record is.
+        self.data({"baseUrl": HTTPBIN, "stage": "staging", "tenant": "Contoso API", "team": "partners"},
+                  [folder("partners", headers=[("X-Environment", "{{ stage }}"), ("X-Tenant", "{{ tenant }}"),
+                                               ("X-Team", "{{ team }}")])],
+                  subs={"staging": {}}, collection="Contoso API")
+        r = self.call("/json", "--env", "Env/staging", "--collection", "Contoso API", "--folder", "partners", expect=200,
+                      network=True)
+        self.assertEqual(r.code, 0, r)
+        self.assertEqual((r.record["environment"], r.record["collection"], r.record["folder"]),
+                         ("Env/staging", "Contoso API", "partners"))
+        self.assertEqual(r.record["request_headers"]["X-Environment"], "********")
+
+
+class ResolutionLimits(Case):
+    """Round 3: a value that names other values many times over is resolved once per variable, and stops at 65536
+    characters, as in the Postman source, so a shared data folder cannot stall a run."""
+
+    @staticmethod
+    def fan_out(times, leaf):
+        """a0 names a1 `times` times, a1 names a2 as often, and so on to a4: a0 is times**4 copies of leaf."""
+        env = {f"a{i}": "{{ a%d }}" % (i + 1) * times for i in range(4)}
+        env["a4"] = leaf
+        return env
+
+    def test_r3_a_value_resolving_past_the_cap_stops_at_once(self):
+        self.data({"baseUrl": OFFLINE, **self.fan_out(20, "x")}, [folder("API", bearer("{{ a0 }}"))])
+        r, seconds = self.timed_call("/x")
+        self.assertEqual(r.code, 1, r)
+        self.assertIn("variable 'a0' in 'Env' resolves to more than 65536 characters", r.stderr, r)
+        self.assertLess(seconds, 20, r)
+
+    def test_r3_a_wide_fan_out_of_empty_values_is_quick(self):
+        # Empty values never reach the cap; without reuse, a0 would take 24**4 resolutions.
+        self.data({"baseUrl": OFFLINE, **self.fan_out(24, "")}, [folder("API", bearer("FAKE-tok-{{ a0 }}"))])
+        r, seconds = self.timed_call("/x")
+        self.assertReachedSend(r)
+        self.assertLess(seconds, 20, r)
+
+    def test_r3_reuse_keeps_the_nesting_limit(self):
+        # c is resolved first from the base URL, two deep; reused from the token, it would be six deep.
+        self.data({"baseUrl": "https://127.0.0.1:1/{{ c }}", "c": "{{ d }}", "d": "{{ e }}", "e": "{{ f }}", "f": "{{ g }}",
+                   "g": "x", "token": "{{ b }}", "b": "{{ c }}"}, [folder("API", bearer())])
+        r = self.call("/x")
+        self.assertEqual(r.code, 1, r)
+        self.assertIn("variable 'token' in 'Env' nests templates more than five deep, or refers to itself", r.stderr, r)
 
 
 if __name__ == "__main__":

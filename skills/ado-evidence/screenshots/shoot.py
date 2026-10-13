@@ -10,7 +10,7 @@ types it there gets the preview shown. The images it references are api-call's d
 duplicated here; both skills draw in the same frame, api-call's frame.html. Run it from anywhere; paths are resolved
 from this file. Only ever run from a clone, which is why it reaches across to the other skill.
 """
-import html, os, shlex, shutil, subprocess, sys
+import html, os, re, shlex, shutil, subprocess, sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -74,9 +74,9 @@ def main():
     rows = terminal()
     colors = {"cmd": "color:#74bdf5;font-weight:700"}
     body = "\n".join(f'<span style="{colors[c]}">{html.escape(t)}</span>' if c else html.escape(t) for c, t in rows)
-    page = (FRAME.read_text(encoding="utf-8")
-            .replace("{{title}}", html.escape(f"ado-evidence - preview for work item {WORK_ITEM}"))
-            .replace("{{body}}", body))
+    # One pass, so a {{body}} inside the title is not filled with the body.
+    fill = {"title": html.escape(f"ado-evidence - preview for work item {WORK_ITEM}"), "body": body}
+    page = re.sub(r"\{\{(title|body)\}\}", lambda m: fill[m.group(1)], FRAME.read_text(encoding="utf-8"))
     page_file = PNG.with_suffix(".html")
     page_file.write_text(page, encoding="utf-8")
 
