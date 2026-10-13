@@ -32,6 +32,7 @@ UNUSUAL = re.compile(r"[^\t\x20-\x7e]")
 IGNORABLE = ((0x034F, 0x034F), (0x115F, 0x1160), (0x17B4, 0x17B5), (0x180B, 0x180F), (0x3164, 0x3164),
              (0xFE00, 0xFE0F), (0xFFA0, 0xFFA0), (0xE0100, 0xE01EF))
 BLANK = "\u2800"  # the Braille pattern with no dots: a symbol (So) that draws as a space
+OBJECT = "\ufffc"  # the object replacement character: a symbol (So) that many fonts draw as a space
 PLACEHOLDER = re.compile(r"\{\{(title|body)\}\}")  # what page() fills in frame.html
 
 
@@ -118,12 +119,13 @@ def hidden(ch, before=""):
     these), or another default-ignorable code point. A variation selector right after a symbol (So) stays, since it
     picks that visible symbol's text or emoji form: U+26A0 then U+FE0F is the warning sign drawn as an emoji. A space
     other than U+0020 (Zs: the no-break space, U+2000 to U+200A, U+202F, U+205F, the ideographic space U+3000 and the
-    rest) and the blank Braille pattern are shown as escapes too: each draws as an ordinary space, so two different
+    rest), the blank Braille pattern and the object replacement character U+FFFC are shown as escapes too: each draws
+    as an ordinary space, so two different
     bodies would draw the same."""
     category = unicodedata.category(ch)
     if category in ("Cc", "Cf", "Zl", "Zp", "Cs", "Cn"):
         return ch != "\t"
-    if category == "Zs" or ch == BLANK:
+    if category == "Zs" or ch in (BLANK, OBJECT):
         return ch != " "
     cp = ord(ch)
     if any(lo <= cp <= hi for lo, hi in IGNORABLE):

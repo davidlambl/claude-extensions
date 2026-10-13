@@ -8,7 +8,7 @@ It comes as a skill: ask Claude to post the evidence on a work item, and it draf
 
 1. `post.py` uploads each image named by `{{image:file.png}}` in your markdown as a work item attachment, and puts the embedded image in its place.
 2. It adds the comment in markdown, or with `--edit` replaces the text of one you already posted.
-3. It reads the comment back and checks that the stored text matches, that every uploaded image is drawn in the rendered comment, and that each one matches the local file. An image may appear more than once, or beside other images. It prints `ok` or `FAIL` for each check, and exits 1 if any fails. It also exits 1, with no check lines, when it stops on an error. If that comes after the comment was added, the message begins `comment N was posted`: fix that comment with `--edit N` rather than posting again. Either way, look at the work item before running it again.
+3. It reads the comment back and checks that the stored text matches, that every uploaded image is drawn in the rendered comment, and that each one matches the local file. An image may appear more than once, or beside other images. It prints `ok` or `FAIL` for each check, and exits 1 if any fails. It also exits 1, with no check lines, when it stops on an error. If that comes after the comment was added, the message begins `comment N was posted`: fix that comment with `--edit N` rather than posting again. If the comment request itself fails in a way that does not say it was refused, such as a 5xx, a dropped connection or an answer that is not the JSON expected, the message begins `the comment may have been posted`, or `comment N may have been posted` with `--edit`. A 4xx, or Azure DevOps's sign-in page, means the comment was refused. Whatever the message, look at the work item before running it again.
 
 ## Demo
 
@@ -54,7 +54,8 @@ Test, build 2026.10.8.1. 404 is the removed route; 200 is the control.
 ## What it costs and touches
 
 - **Posting acts as you.** It uploads attachments and adds or edits a comment under your Azure DevOps identity. Run with `--dry-run` first.
-- **Your token goes to Azure DevOps only.** `--org` must be `https://dev.azure.com/<org>` or `https://<org>.visualstudio.com`. An attachment URL Azure DevOps answers with must be on those hosts too, or the comment is not posted. A redirect is an error, never followed.
+- **Your token goes to Azure DevOps only.** `--org` must be `https://dev.azure.com/<org>` or `https://<org>.visualstudio.com`. An attachment URL Azure DevOps answers with must belong to the same organization, at either of those two addresses, and hold no token. Otherwise the comment is not posted, and the URL is never requested. A redirect is an error, never followed.
+- **What it prints is scrubbed.** Every line has the token masked, as is, percent-encoded, JSON-escaped or as HTML character references. So does the Basic value a personal access token goes as. The mask comes before any text is cut short, so a cut never leaves part of a token standing. An error body in UTF-16 is decoded first. A token encoded twice, or split into pieces, is not masked.
 - **An image is named by its file name alone**, looked up in the images folder; a path, a drive such as `C:shot.png`, or any colon is refused.
 - **Editing leaves the earlier images attached**, unreferenced; Azure DevOps keeps a comment's attachments.
 

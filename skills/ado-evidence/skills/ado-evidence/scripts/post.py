@@ -115,7 +115,7 @@ def attachment_url(name, answer, org, project, secrets=()):
         if u and azure_devops(url) and PLAIN_HOST.fullmatch(u.netloc):
             for host, root in roots:
                 path = re.escape(root) + f"(?:/{segment}){{0,2}}/_apis/wit/attachments/{GUID}"
-                if u.netloc.lower() == host and re.fullmatch(path, u.path, re.IGNORECASE):
+                if u.netloc.lower() == host and re.fullmatch(path, u.path, re.IGNORECASE | re.ASCII):
                     return f"https://{host}{u.path}?fileName={urllib.parse.quote(name, safe='')}"
         under = " or ".join(f"https://{host}{root}" for host, root in roots)
         why = f"is not an attachment under {under} over https in plain URL characters"

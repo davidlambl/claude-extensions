@@ -761,5 +761,15 @@ class InTheBrowser(unittest.TestCase):
         self.assertNotEqual(a[top:top + render.ROW], b[top:top + render.ROW])  # the marks are drawn, in their row
 
 
+
+class ObjectReplacement(unittest.TestCase):
+    """U+FFFC, which text pasted from rich-text apps carries, draws as a space in many fonts: it is drawn as its escape."""
+
+    def test_the_object_replacement_character_is_drawn_as_its_escape(self):
+        self.assertTrue(render.hidden("\ufffc"))
+        drawn = "\n".join(t for _, t in render.rows({**RECORD, "body": "a\ufffcb"}))
+        self.assertIn("a\\ufffcb", drawn)
+        self.assertNotIn("\ufffc", drawn)
+
 if __name__ == "__main__":
     unittest.main()

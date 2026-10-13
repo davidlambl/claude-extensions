@@ -8,8 +8,9 @@ failed" got through every check made before sending. Tests that need a response 
 with fake secrets, and run only when API_CALL_E2E is set; each retries once on a connection error or a status other
 than the one expected. Test names carry the id of the review finding each covers; r2_NN is attack NN of the second
 review round, and r3 marks the third round's narrowed rule: a secret is a value in a credential position (an API
-key's value, a bearer token, a templated header value, a password in the base URL and the basic token from it, with
-every part substituted into each), matched in its own letter case; hosts, paths, names and labels are shown.
+key's value, a bearer token, a templated header value save for a standard header that never carries one, a password
+in the base URL and the basic token from it, with every part substituted into each), matched in its own letter case;
+hosts, paths, names and labels are shown, with any secret in them masked.
 """
 import base64, html, json, os, re, shutil, subprocess, sys, tempfile, time, unittest, urllib.parse
 from datetime import datetime, timezone
@@ -30,6 +31,7 @@ HTTPBIN = "https://httpbin.org"
 SINGLE_BYTE_CONSOLE = {"LC_ALL": "en_US.ISO8859-1", "LANG": "en_US.ISO8859-1", "PYTHONUTF8": "1"}
 REFUSED = "refusing to print: a secret would appear in the output"
 SENT = "the request failed"
+UNPARSED = "the request failed: the base URL holds credentials that could not be parsed or reached"
 
 needs_pwsh = unittest.skipUnless(PWSH, "PowerShell 7 (pwsh) is not installed")
 needs_network = unittest.skipUnless(E2E, "calls postman-echo.com or httpbin.org; set API_CALL_E2E=1 to run")
@@ -277,6 +279,26 @@ class ErrorMessages(Case):
         self.assertIn("127.0.0.1", r.stderr, r)
         self.assertNotIn("********", r.stderr, r)
 
+    def test_r3_an_error_from_a_base_url_holding_an_at_quotes_no_part_of_it(self):
+        # An unencoded / ? or # in a credential ends the authority before its @, so no userinfo is found and .NET takes
+        # part of the credential for the host or the port: a DNS failure would name it, lowercased, where no mask can
+        # find it. With an @ after the scheme, a URL that cannot be built or a request that fails is reported in words
+        # that quote nothing. Each first half is a single label, which fails to resolve at once.
+        cases = {"user with no password, holding a /": ("https://{{ tok }}@127.0.0.1:1", {"tok": "FAKEtok31415/abcdef12"}),
+                 "user with no password, holding a ?": ("https://{{ tok }}@127.0.0.1:1", {"tok": "FAKEtok31415?abcdef12"}),
+                 "user with no password, holding a #": ("https://{{ tok }}@127.0.0.1:1", {"tok": "FAKEtok31415#abcdef12"}),
+                 "password holding an @, then a /": ("https://amy:{{ pw }}@127.0.0.1:1",
+                                                     {"pw": "FAKEpw-2718@ssFAKE2718/word12"}),
+                 "password .NET cannot build": ("https://amy:{{ pw }}@127.0.0.1:1", {"pw": "FAKEpw2718/rest99"})}
+        for label, (base, env) in cases.items():
+            with self.subTest(label):
+                self.data({"baseUrl": base, **env}, [])
+                r = self.call("/x")
+                self.assertEqual(r.code, 1, r)
+                self.assertIn(UNPARSED, r.stderr, r)
+                for part in re.split(r"[/?#@]", next(iter(env.values()))):
+                    self.assertNotIn(part.lower(), r.stderr.lower(), r)
+
     def test_correctness_10_error_message_reaches_call_py_as_utf8(self):
         # A single-byte console encoding, as a Windows console's OEM code page is: pwsh must still write UTF-8,
         # which is what call.py reads. On Windows the console's own code page plays the part of LC_ALL.
@@ -452,6 +474,32 @@ class Headers(Case):
         received = json.loads(r.record["body"])["headers"]
         self.assertNotIn("content-type", received)
         self.assertEqual(received["x-tenant"], "contoso")
+
+
+    @needs_network
+    def test_r3_a_templated_header_that_never_carries_a_credential_is_shown(self):
+        # Accept: {{ accept }} = application/json is configuration: as a secret it would refuse every JSON response,
+        # whose Content-Type carries it. So is a templated Content-Type, which a GET does not send, and which would
+        # otherwise match the record's own Accept. Names compare in any letter case. httpbin's /headers echoes the
+        # headers it received.
+        env = {"baseUrl": HTTPBIN, "accept": "application/json", "ct": "application/json", "xrw": "XMLHttpRequest",
+               "lang": "en-GB,en;q=0.8"}
+        self.data(env, [folder("API", headers=[("Accept", "{{ accept }}"), ("content-type", "{{ ct }}"),
+                                               ("x-requested-with", "{{ xrw }}"), ("Accept-Language", "{{ lang }}")])])
+        r = self.call("/headers", "--folder", "API", expect=200, network=True)
+        self.assertEqual(r.code, 0, r)
+        shown = r.record["request_headers"]
+        self.assertEqual((shown["Accept"], shown["x-requested-with"], shown["Accept-Language"]),
+                         ("application/json", "XMLHttpRequest", "en-GB,en;q=0.8"))
+        self.assertNotIn("content-type", [k.lower() for k in shown])
+        received = json.loads(r.record["body"])["headers"]
+        self.assertEqual((received["Accept"], received["X-Requested-With"]), ("application/json", "XMLHttpRequest"))
+        self.data(env, [folder("API", headers=[("Content-Type", "{{ ct }}")])])
+        r = self.call("/status/204", "--folder", "API", expect=204, network=True)
+        self.assertEqual(r.code, 0, r)
+        # Every other templated header value is still a secret, refused when a response carries it.
+        self.data(env, [folder("API", headers=[("X-Format", "{{ accept }}")])])
+        self.assertRefused(self.call("/json", "--folder", "API", expect=200, network=True))
 
 
 class Values(Case):
@@ -770,6 +818,59 @@ class BaseUrl(Case):
         self.assertEqual(r.code, 0, r)
         self.assertEqual(r.record["url"], HTTPBIN + "/anything/FAKE-section-8a7b6c5d/x")
         self.assertIn("FAKE-section-8a7b6c5d", json.loads(r.record["body"])["url"])
+
+    @needs_network
+    def test_r3_a_secret_in_the_base_url_or_the_path_typed_is_masked_there_not_refused(self):
+        # A templated header value is a secret, and so is an API key's value; the same value in the base URL, in the
+        # path typed or as the user beside a password is configuration and the user's own input, never a response, so
+        # the record shows it as ******** there and is printed. httpbin's 404 page echoes nothing.
+        tenant = "FAKE-tenant-5d4c3b2a"
+        header = [("X-Tenant-Id", "{{ tenant }}")]
+        cases = {"base URL path": (HTTPBIN + "/tenants/{{ tenant }}", folder("API", headers=header), "/orders/42",
+                                   HTTPBIN + "/tenants/********/orders/42", "/orders/42", "none"),
+                 "path typed": (HTTPBIN, folder("API", headers=header), f"/tenants/{tenant}/orders",
+                                HTTPBIN + "/tenants/********/orders", "/tenants/********/orders", "none"),
+                 "API key in the base URL": (HTTPBIN + "/clients/{{ tenant }}",
+                                             folder("API", apikey("X-Client-Id", "{{ tenant }}")), "/orders",
+                                             HTTPBIN + "/clients/********/orders", "/orders",
+                                             "API key in header X-Client-Id"),
+                 "user beside a password": ("https://{{ tenant }}:pw123@httpbin.org", folder("API", headers=header),
+                                            "/orders", "https://********:********@httpbin.org/orders", "/orders",
+                                            "basic auth from the base URL as ********")}
+        for label, (base, f, path, url, shown_path, auth) in cases.items():
+            with self.subTest(label):
+                self.data({"baseUrl": base, "tenant": tenant}, [f])
+                r = self.call(path, "--folder", "API", expect=404, network=True)
+                self.assertEqual(r.code, 0, r)
+                self.assertEqual((r.record["url"], r.record["path"], r.record["auth"]), (url, shown_path, auth))
+                self.assertNotIn(tenant, r.files)
+        # A response that echoes it is still refused: /anything echoes the URL it was sent.
+        self.data({"baseUrl": HTTPBIN + "/anything/{{ tenant }}", "tenant": tenant}, [folder("API", headers=header)])
+        self.assertRefused(self.call("/x", "--folder", "API", expect=200, network=True), tenant)
+
+    def test_r3_a_secret_in_the_url_is_masked_in_every_form_the_check_finds(self):
+        # As is, percent-encoded in either case of hex, and as .NET writes it in a URL, which leaves a / as it is.
+        # A value under six characters is not masked, nor one .NET reshapes (a \ turned to /), which reads as
+        # another text; neither is found by the check.
+        r = self.functions(r"""
+            foreach ($s in 'FAKE-tenant-5d4c3b2a', 'FAKE tenant/5d4c3b2a', 'abc+def/ghi12==', "fake-$([char]0xfc)-1234567",
+                    'v2', 'a\bcdefgh') { $secrets.Add($s) }
+            $urls = @('https://h/tenants/FAKE-tenant-5d4c3b2a/orders', ([Uri]'https://h/t/FAKE tenant/5d4c3b2a/x').AbsoluteUri,
+                      'https://h/x?k=abc%2Bdef%2Fghi12%3D%3D', 'https://h/x?k=abc%2bdef%2fghi12%3d%3d', 'https://h/abc+def/ghi12==',
+                      ([Uri]"https://h/fake-$([char]0xfc)-1234567").AbsoluteUri, 'https://h/v2/x', ([Uri]'https://h/a\bcdefgh').AbsoluteUri)
+            ,@(foreach ($u in $urls) { $m = Hide-SecretForms $u $secrets; ,@($u, $m, (Test-Exposed @($m) $secrets)) }) |
+                ConvertTo-Json -Compress
+        """)
+        self.assertEqual([(u, m) for u, m, _ in r],
+                         [("https://h/tenants/FAKE-tenant-5d4c3b2a/orders", "https://h/tenants/********/orders"),
+                          ("https://h/t/FAKE%20tenant/5d4c3b2a/x", "https://h/t/********/x"),
+                          ("https://h/x?k=abc%2Bdef%2Fghi12%3D%3D", "https://h/x?k=********"),
+                          ("https://h/x?k=abc%2bdef%2fghi12%3d%3d", "https://h/x?k=********"),
+                          ("https://h/abc+def/ghi12==", "https://h/********"),
+                          ("https://h/fake-%C3%BC-1234567", "https://h/********"),
+                          ("https://h/v2/x", "https://h/v2/x"),
+                          ("https://h/a/bcdefgh", "https://h/a/bcdefgh")])
+        self.assertEqual([exposed for _, _, exposed in r], [False] * len(r))
 
     @needs_network
     def test_r3_templated_scheme_host_and_path_are_shown_and_echoed_freely(self):

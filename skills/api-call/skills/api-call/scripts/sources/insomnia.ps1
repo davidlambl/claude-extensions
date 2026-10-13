@@ -10,17 +10,21 @@ Reads Insomnia's local data, read-only:
     collection holds for the request's host
 
 Secrets stay in this process. A secret is a value in a credential position: the API key's value (in a header, a query
-parameter or a cookie), the bearer token, a header value the folder templates, a password in the base URL's userinfo
+parameter or a cookie), the bearer token, a header value the folder templates (save for the standard headers that
+never carry a credential, such as Accept or Content-Type: see $plainHeaders), a password in the base URL's userinfo
 (templated or typed), or its user when it has no password (https://TOKEN@host, as a service such as GitHub takes a
 token for the user), and the basic token sent from the userinfo, and a client certificate's passphrase; each together
 with every value substituted into it, at any depth. The JSON it prints shows each of them as ********, and a client
 certificate by file name only. The rest is configuration, shown as resolved and never a reason to refuse: the base
 URL's scheme, host, port and path, header names, the API key's name, the bearer prefix, the base URL's user beside a
-password, and the environment, collection and folder names. The script refuses to print if any secret would appear in
-its output, in its own letter case, in any form a response could carry it back in: as is, without surrounding
-whitespace, percent-encoded, JSON-escaped, or as HTML character references. A secret encoded twice over is not looked
-for. An API key or a bearer token that resolves to an empty value stops the call before anything is sent, with a
-message that quotes no value; an empty password in the base URL is sent, and its user is then the credential.
+password, and the environment, collection and folder names. A secret that is also part of that configuration or of the
+path typed, as a tenant id sent in a templated header and named in the base URL is, shows there as ********. The
+script refuses to print if any secret would appear in its output, in its own letter case, in any form a response could
+carry it back in: as is, without surrounding whitespace, percent-encoded, JSON-escaped, or as HTML character
+references. A secret encoded twice over is not looked for. An API key or a bearer token that resolves to an empty value
+stops the call before anything is sent, with a message that quotes no value; an empty password in the base URL is
+sent, and its user is then the credential. When the base URL holds an @ after its scheme, a failure to build the URL or
+to send the request is reported in words that quote no part of the URL or its host.
 Variable names are case-sensitive, as in Insomnia; only the default base URL variable, baseUrl, falls back to the one
 variable whose name matches it in another letter case. A value may resolve to at most 65536 characters. A redirect is
 recorded as the response, never followed, so a key is sent only to the host the collection named.
@@ -162,6 +166,28 @@ function Hide-Secrets([string]$text, $list) {
         }
     }
     if (Test-Exposed @($text) $list) { return 'the error message would have shown a secret, so it is withheld' }
+    return $text
+}
+
+# A text the record shows that is built from configuration and the path typed, never from a response (the url, the
+# path and the auth's description), with each form of a secret the check looks for (see Get-SecretForms) masked, the
+# longest first: as is, percent-encoded in upper- or lower-case hex, and as .NET writes it in a URL, which leaves more
+# characters as they are and decodes the unreserved ones. A value that is both a credential and a part of the base URL
+# or the path then shows as ******** there, instead of stopping every call; a response that echoes it is still refused.
+# A form .NET reshapes (a \ turned to /, a dot segment dropped) reads as another text, and is not masked.
+function Hide-SecretForms([string]$text, $list) {
+    if (-not $text) { return $text }
+    $masked = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($f in (Get-SecretForms $list)) {
+        $e = [Uri]::EscapeDataString($f)
+        $inUrl = $null
+        try { $inUrl = [Uri]::new('https://h/' + $f).AbsoluteUri.Substring('https://h/'.Length) } catch { $inUrl = $null }
+        if ($inUrl -and [Uri]::UnescapeDataString($inUrl) -cne [Uri]::UnescapeDataString($f)) { $inUrl = $null }
+        foreach ($form in @($f, $e, [regex]::Replace($e, '%[0-9A-F]{2}', { param($m) $m.Value.ToLowerInvariant() }), $inUrl)) {
+            if ($form) { [void]$masked.Add($form) }
+        }
+    }
+    foreach ($form in @($masked | Sort-Object Length -Descending)) { $text = $text.Replace($form, '********', [StringComparison]::Ordinal) }
     return $text
 }
 
@@ -426,6 +452,12 @@ $b = Get-Variable $BaseUrlVar '' 0
 $baseUrl = $b.Value.TrimEnd('/')
 if (-not $baseUrl.StartsWith('https://', [StringComparison]::Ordinal)) { throw "'$BaseUrlVar' must be an https:// URL" }
 if (-not $Path.StartsWith('/', [StringComparison]::Ordinal)) { $Path = '/' + $Path }
+# An @ after the scheme means the base URL may hold credentials that did not parse: an unencoded / ? or # in a user or
+# a password ends the authority early (see Split-BaseUrl), so no secret is found there, and .NET takes part of the
+# credential for the host or the port. An error naming that host (a DNS failure, say) would print it, lowercased. So
+# when the URL cannot be built or the request fails, the error is this one, which quotes nothing.
+$credentialsInUrl = $baseUrl.IndexOf([char]'@', 'https://'.Length) -ge 0
+$credentialsError = 'the request failed: the base URL holds credentials that could not be parsed or reached; percent-encode any / ? # or @ in its user or password'
 $split = Split-BaseUrl $baseUrl
 # A user with no password, or an empty one (https://TOKEN@host, or TOKEN:@host), is the credential itself, as the
 # Postman source holds: a service such as GitHub takes a token for the user. Beside a password, the user is shown.
@@ -471,11 +503,19 @@ if ($folderDoc -and (Test-Auth $folderDoc)) {
         default { throw "auth type '$($a['type'])' on folder '$folderName' is not supported (API key and bearer only)" }
     }
 }
+# The standard headers that never carry a credential. A value the folder templates for one of them is configuration,
+# shown as resolved as a typed value is, so that Accept: {{ accept }} cannot make every JSON response's Content-Type a
+# secret. A content header such as Content-Type, which a GET does not send, is no secret either. Every other templated
+# header value is a secret. Names compare in any letter case.
+$plainHeaders = [Collections.Generic.HashSet[string]]::new([string[]]@('Accept', 'Accept-Charset', 'Accept-Encoding',
+        'Accept-Language', 'Cache-Control', 'Connection', 'Content-Language', 'Content-Length', 'Content-Type', 'Host',
+        'Origin', 'Pragma', 'Referer', 'User-Agent', 'X-Forwarded-For', 'X-Forwarded-Host', 'X-Forwarded-Proto',
+        'X-Requested-With'), [StringComparer]::OrdinalIgnoreCase)
 foreach ($h in @($folderDoc ? $folderDoc['headers'] : @())) {
     if ($h -isnot [Collections.IDictionary] -or $h['disabled'] -or -not $h['name']) { continue }
     $name = (Resolve-Template ([string]$h['name'])).Value
     $raw = [string]$h['value']
-    if ($raw -match '\{\{') { $headers[$name] = Resolve-Secret $raw; $shownHeaders[$name] = '********' }
+    if ($raw -match '\{\{' -and -not $plainHeaders.Contains($name)) { $headers[$name] = Resolve-Secret $raw; $shownHeaders[$name] = '********' }
     else { $value = (Resolve-Template $raw).Value; $headers[$name] = $value; $shownHeaders[$name] = $value }
 }
 # An API key added to a cookie goes first in the Cookie header, ahead of any the folder sets. A cookie is one
@@ -492,19 +532,26 @@ if ($null -ne $cookieKey) {
 
 # The URL goes without its userinfo, which .NET would not send. The url the record shows is the one sent, normalized
 # as .NET sends it, with the userinfo put back as the base URL had it and its password masked, and its user too when
-# that is the credential: both are found on the text (see Split-BaseUrl), never by parsing it.
-$builder = [UriBuilder]::new($split.Url + $Path)
-$shownUrl = $builder.Uri.AbsoluteUri
-if ($null -ne $split.User) {
-    $start = $builder.Uri.Scheme + '://'
-    $shownUser = if ($userIsKey) { '********' } else { $split.User }
-    $shownUrl = $start + $shownUser + $(if ($null -ne $split.Password) { ':********' }) + '@' + $shownUrl.Substring($start.Length)
-}
-if ($queryKey) {
-    $pair = [Uri]::EscapeDataString($queryKey) + '=' + [Uri]::EscapeDataString($queryValue)
-    $existing = $builder.Query.TrimStart('?')
-    $builder.Query = if ($existing) { "$existing&$pair" } else { $pair }
-    $shownUrl = $shownUrl + ($(if ($existing) { '&' } else { '?' })) + [Uri]::EscapeDataString($queryKey) + '=********'
+# that is the credential: both are found on the text (see Split-BaseUrl), never by parsing it. A base URL holding an @
+# that .NET cannot build fails with $credentialsError, whose words quote none of it.
+try {
+    $builder = [UriBuilder]::new($split.Url + $Path)
+    $shownUrl = $builder.Uri.AbsoluteUri
+    if ($null -ne $split.User) {
+        $start = $builder.Uri.Scheme + '://'
+        $shownUser = if ($userIsKey) { '********' } else { $split.User }
+        $shownUrl = $start + $shownUser + $(if ($null -ne $split.Password) { ':********' }) + '@' + $shownUrl.Substring($start.Length)
+    }
+    if ($queryKey) {
+        $pair = [Uri]::EscapeDataString($queryKey) + '=' + [Uri]::EscapeDataString($queryValue)
+        $existing = $builder.Query.TrimStart('?')
+        $builder.Query = if ($existing) { "$existing&$pair" } else { $pair }
+        $shownUrl = $shownUrl + ($(if ($existing) { '&' } else { '?' })) + [Uri]::EscapeDataString($queryKey) + '=********'
+    }
+    $uri = $builder.Uri
+} catch {
+    if ($credentialsInUrl) { throw $credentialsError }
+    throw
 }
 # As Insomnia (libcurl) and Postman do: the URL's user and password, percent-decoded, go as basic auth, unless the
 # auth already set Authorization. The user is shown beside a password; the password, a user with none, and the basic
@@ -519,7 +566,6 @@ if (($split.User -or $null -ne $split.Password) -and -not @($headers.Keys | Wher
     else { 'basic auth from the base URL, with an empty user' }
     $authText = if ($authText -eq 'none') { $via } else { "$authText, and $via" }
 }
-$uri = $builder.Uri
 
 # The client certificate the collection holds for this host. As in Insomnia, a host may carry a * wildcard, and a
 # port, which is compared as a number with 443 assumed when either side has none.
@@ -539,7 +585,10 @@ function Test-HostMatch([string]$pattern, [Uri]$u) {
 }
 $certDocs = @((Read-InsomniaDb 'insomnia.ClientCertificate.db').Values | Where-Object {
         $_['parentId'] -eq $collectionId -and -not $_['disabled'] -and $_['host'] -and (Test-HostMatch ([string]$_['host']) $uri) })
-if ($certDocs.Count -gt 1) { throw "'$Collection' has $($certDocs.Count) client certificates for $($uri.Host)" }
+if ($certDocs.Count -gt 1) {
+    # The host is named only when it cannot be part of a credential that did not parse (see $credentialsInUrl).
+    throw "'$Collection' has $($certDocs.Count) client certificates for $(if ($credentialsInUrl) { "the base URL's host" } else { $uri.Host })"
+}
 $cert = $null; $certName = $null
 if ($certDocs.Count -eq 1) {
     $c = $certDocs[0]
@@ -570,6 +619,12 @@ foreach ($k in @($headers.Keys)) {
     throw "header '$k' on folder '$folderName' is not a valid HTTP header name"
 }
 $requestHeaders = $shownHeaders
+# The url, the path and the auth's description come from configuration and the path typed, never from a response, so a
+# secret in them (a tenant id sent in a templated header and named in the base URL, say) is masked, not refused. Every
+# secret is registered by now.
+$shownUrl = Hide-SecretForms $shownUrl $secrets
+$shownPath = Hide-SecretForms $Path $secrets
+$authText = Hide-SecretForms $authText $secrets
 
 # The body as text: a byte order mark wins, as in .NET's own reading, then the declared charset if .NET knows it,
 # then UTF-8. An unknown charset, such as the common misspelling utf8, is no reason to lose a response.
@@ -600,6 +655,8 @@ try {
     $response = $client.SendAsync($message).GetAwaiter().GetResult()
     $bytes = $response.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
 } catch {
+    # A base URL holding an @ may have put part of a credential in the host the message names (see $credentialsInUrl).
+    if ($credentialsInUrl) { throw $credentialsError }
     # The .NET exception under PowerShell's wrapper, with its cause; the trap masks any secret the message quotes.
     $e = $_.Exception
     while ($e -is [Management.Automation.MethodInvocationException] -and $e.InnerException) { $e = $e.InnerException }
@@ -628,7 +685,7 @@ $json = [ordered]@{
     collection      = $Collection
     folder          = $folderName
     method          = 'GET'
-    path            = $Path
+    path            = $shownPath
     url             = $shownUrl
     auth            = $authText
     request_headers = $requestHeaders
@@ -646,7 +703,7 @@ $json = [ordered]@{
 # returned; the decoded readings go further, for any reader that decodes it. The environment, collection and folder
 # names are the record's own labels, chosen by the user, and the field names and times hold nothing from a variable,
 # so none of them is a reason to refuse.
-$shown = @($shownUrl, $authText, $certName, $body) + @($requestHeaders.Keys) + @($requestHeaders.Values) + @($responseHeaders.Values)
+$shown = @($shownUrl, $shownPath, $authText, $certName, $body) + @($requestHeaders.Keys) + @($requestHeaders.Values) + @($responseHeaders.Values)
 $shown += ConvertTo-Json -InputObject $shown -Compress -EscapeHandling EscapeNonAscii
 if (Test-Exposed $shown $secrets) { throw 'refusing to print: a secret would appear in the output' }
 Write-Out $false $json

@@ -6,8 +6,8 @@ sent and answers from a script. So the refusal, the masking, the redirect handli
 to end without a network. EndToEnd sends real requests through call.py to postman-echo.com and httpbin.org with fake
 secrets, and runs only with API_CALL_E2E set (CI sets it). A test's name carries the id of the review finding it
 covers (docs_1, secrets_2, checks_4, ...)."""
-import contextlib, http, http.client, io, json, os, subprocess, sys, tempfile, unittest, urllib.parse, urllib.request
-from datetime import datetime
+import codecs, contextlib, http, http.client, io, json, os, subprocess, sys, tempfile, unittest, urllib.parse, urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -596,7 +596,7 @@ class Parity(unittest.TestCase):
     shown as resolved and never refused for being echoed: the base URL's host, port and path, an API key's name, a
     basic auth user. R3: matching is case-sensitive. R4: one layer of encoding is checked, names are case-sensitive.
     R5: a userinfo password is masked wherever a template puts the scheme, host or port. A test's d-number is the
-    Insomnia review entry it is modelled on; r-tests are round three's."""
+    Insomnia review entry it is modelled on; r-tests are round three's, and v3-tests the third verification's."""
 
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
@@ -758,7 +758,7 @@ class Parity(unittest.TestCase):
         v20 = {"type": "basic", "basic": {"username": "{{apiKey}}"}}  # a v2.0 export may leave the password out
         self.assertEqual(self.build(v20, plain_env(), extra={"apiKey": "FAKE-key-4b8d2e61"})["headers"]["Authorization"], f"Basic {token}")
         no_user = {"type": "basic", "basic": [{"key": "username", "value": ""}, {"key": "password", "value": "{{apiKey}}"}]}
-        self.assertEqual(self.build(no_user, plain_env(), extra={"apiKey": "FAKE-key-4b8d2e61"})["auth"], "basic auth as ")
+        self.assertEqual(self.build(no_user, plain_env(), extra={"apiKey": "FAKE-key-4b8d2e61"})["auth"], "basic auth, with an empty user")
 
     def test_r1_an_empty_basic_credential_still_stops_the_call(self):
         def basic(user, password):
@@ -944,6 +944,118 @@ class Parity(unittest.TestCase):
             self.assertEqual(seen[0]["headers"]["x-api-key"], "pub12")
         with self.assertRaisesRegex(postman.Problem, "variable 'apikey' is not"):
             self.build(apikey("X-Api-Key", "{{apikey}}"), plain_env(("apiKey", "pub12"), ("APIKEY", "prd99")))
+
+    def test_v3_every_part_of_a_url_user_with_no_password_is_a_secret(self):
+        # https://{{prefix}}{{token}}@host sends the user as the key. Each part substituted into it, at every depth, is
+        # a secret, found by where it was substituted, as the Insomnia source finds it; the host is configuration.
+        env = plain_env(("prefix", "FAKE-pfx-31415926"), ("token", "{{inner}}-tail"), ("inner", "FAKE-deep-27182818"),
+                        ("host", "api.example.com"), base="https://{{prefix}}{{token}}@{{host}}")
+        user = "FAKE-pfx-31415926FAKE-deep-27182818-tail"
+        b = self.build(None, env)
+        self.assertEqual((b["shown_url"], b["auth"]), ("https://********@api.example.com/x", "basic auth from the base URL as ********"))
+        self.assertEqual(b["headers"]["Authorization"], "Basic " + postman.base64.b64encode(f"{user}:".encode()).decode())
+        self.assertTrue({user, "FAKE-pfx-31415926", "FAKE-deep-27182818-tail", "FAKE-deep-27182818"} <= set(b["secrets"]))
+        self.assertNotIn("api.example.com", b["secrets"])
+        for part in ("FAKE-pfx-31415926", "FAKE-deep-27182818"):
+            echo = (200, {"Content-Type": "application/json"}, json.dumps({"user": part}).encode())
+            self.assertRefused(self.main(None, env, "/x", echo), part)
+        self.assertPrinted(self.main(None, env, "/x", (200, {"Content-Type": "application/json"}, b'{"host": "api.example.com"}')), "api.example.com")
+        # A template that runs across an edge of the credential: the piece of it inside is a secret, the rest is not.
+        for base, pairs, piece, outside in (
+                ("{{origin}}{{tok}}@api.example.com", (("origin", "https://FAKE-org-16180339"), ("tok", "FAKE-tok-14142135")),
+                 "FAKE-org-16180339", "https://FAKE-org-16180339"),  # the scheme and the start of a user with no password
+                ("https://amy:{{pw}}{{rest}}", (("pw", "FAKE-pw-9z8y7x6w"), ("rest", "FAKE-end-11235813@api.example.com")),
+                 "FAKE-end-11235813", "FAKE-end-11235813@api.example.com")):  # the end of a password and the host
+            env = plain_env(*pairs, base=base)
+            b = self.build(None, env)
+            self.assertIn(piece, b["secrets"], base)
+            self.assertNotIn(outside, b["secrets"], base)
+            echo = (200, {"Content-Type": "application/json"}, json.dumps({"echo": piece}).encode())
+            self.assertRefused(self.main(None, env, "/x", echo), piece)
+
+    def test_v3_a_failed_request_with_credentials_in_the_base_url_quotes_none_of_it(self):
+        # An unencoded / ? or # ends the userinfo early on the text, so no password is found to mask, and http.client
+        # reads what came before it as host:port: "nonnumeric port: 'Secretpart'". The message quotes none of the URL.
+        for pw in ("Secretpart/Pass1234", "Secretpart?Pass1234", "Secretpart#Pass1234"):
+            code, out, err, seen = self.main(None, plain_env(("pw", pw), base="https://amy:{{pw}}@api.example.com"), "/get", OK_JSON)
+            self.assertEqual((code, out, seen), (1, "", []), pw)
+            self.assertEqual(err, postman.UNREACHED)
+        # A token with no password, cut short the same way, names a host of its own, and an error quoting it is replaced
+        # too; so is any failure of a request whose base URL holds credentials, parsed or not.
+        unknown = lambda req: OSError(f"[Errno 8] nodename nor servname provided, or not known: {req.host}")
+        for base in ("https://Secretpart/Pass1234@api.example.com", "https://amy:FAKE-pw-9z8y7x6w@api.example.com"):
+            code, out, err, seen = self.main(None, plain_env(base=base), "/get", unknown)
+            self.assertEqual((code, out, err), (1, "", postman.UNREACHED), base)
+        # A base URL with no @ keeps the error, masked as before: the host in it is configuration.
+        code, out, err, seen = self.main(None, plain_env(), "/get", unknown)
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(err, "the request failed: URLError: <urlopen error [Errno 8] nodename nor servname provided, or not known: api.example.com>")
+
+    def test_v3_a_vars_value_matching_the_records_own_fields_does_not_refuse_it(self):
+        # Every --vars value was checked against the whole record as JSON, so one that is today's date or the word
+        # postman refused every call. The fields the source writes itself, its labels and the field names are left out,
+        # as the Insomnia source leaves out its labels and times.
+        sent = datetime(2026, 10, 13, 9, 30, 15, 250000).astimezone()
+        own = {"since": sent.date().isoformat(), "stamp": sent.isoformat(timespec="milliseconds"), "client": "postman",
+               "utcHour": sent.astimezone(timezone.utc).strftime("%Y-%m-%dT%H"), "field": "request_headers",
+               "envName": "FAKE-label-env", "colName": "Example"}
+        clock = type("Clock", (datetime,), {"now": classmethod(lambda cls, tz=None: sent)})
+        env = {**plain_env(), "name": "FAKE-label-env"}
+        with mock.patch.object(postman, "datetime", clock):
+            code, out, err, seen = self.main(APIKEY_HEADER, env, "/status/200", OK_JSON, extra={"apiKey": KEY, **own})
+        self.assertEqual(code, 0, err)
+        record = json.loads(out)
+        self.assertEqual((record["source"], record["environment"], record["collection"], record["sent"]), ("postman", "FAKE-label-env", "Example", own["stamp"]))
+        self.assertTrue(record["sent_utc"].startswith(own["utcHour"]))
+        self.assertEqual(record["request_headers"]["X-Api-Key"], "********")
+        # What came from the request or the response is still checked, wherever a --vars value could show in it.
+        secret = "FAKE-vars-8a7b6c5d"
+        base = {"source": "postman", "method": "GET", "url": "https://api.example.com/x", "path": "/x", "auth": "none", "client_cert": None,
+                "request_headers": {"Accept": "application/json"}, "response_headers": {"Content-Type": "text/plain"}, "body": "ok"}
+        for shown in ({"url": f"https://api.example.com/{secret}"}, {"path": f"/{secret}"}, {"auth": f"API key in header {secret}"},
+                      {"client_cert": f"{secret}.pem"}, {"request_headers": {secret: "x"}}, {"request_headers": {"X-Key": secret}},
+                      {"response_headers": {"Location": f"/?k={secret}"}}, {"body": json.dumps({"k": secret})}):
+            self.assertEqual(postman.exposed({**base, **shown}, [secret]), secret, shown)
+        labels = {k: secret for k in ("source", "environment", "collection", "folder", "method", "sent", "sent_utc")}
+        self.assertIsNone(postman.exposed({**base, **labels}, [secret]))
+
+    def test_v3_a_body_is_read_by_its_byte_order_mark_then_its_charset(self):
+        # As the Insomnia source's ConvertFrom-Body: a byte order mark wins and is dropped, then a charset Python knows,
+        # then UTF-8. Before, a body was read as UTF-8 whatever it was, and a key in UTF-16 printed with NULs between.
+        text = '{"error": "bad key FAKE-key-4b8d2e61", "city": "Málaga"}'
+        for codec, bom in (("utf-8", codecs.BOM_UTF8), ("utf-16-le", codecs.BOM_UTF16_LE), ("utf-16-be", codecs.BOM_UTF16_BE),
+                           ("utf-32-le", codecs.BOM_UTF32_LE), ("utf-32-be", codecs.BOM_UTF32_BE)):
+            self.assertEqual(postman.body_text(bom + text.encode(codec), "application/json; charset=utf-8"), text, codec)  # over the label
+        for charset, codec in (("utf-16", "utf-16-le"), ("UTF-16BE", "utf-16-be"), ('"utf-32le"', "utf-32-le"), ("iso-8859-1", "latin-1"),
+                               ("windows-1252", "cp1252")):
+            self.assertEqual(postman.body_text(text.encode(codec), f"application/json; charset={charset}"), text, charset)
+        for content_type in ("application/json; charset=utf8x", "text/plain; charset=base64", "application/json", None):  # unknown, not text, none
+            self.assertEqual(postman.body_text(text.encode("utf-8"), content_type), text, content_type)
+        self.assertEqual(postman.body_text(b"ok " + bytes([0xFF]), "text/plain"), "ok " + chr(0xFFFD))
+        for content_type, body in (("application/json; charset=utf-8", codecs.BOM_UTF16_LE + text.encode("utf-16-le")),
+                                   ("application/json; charset=utf-16be", text.encode("utf-16-be")),
+                                   ("text/plain", codecs.BOM_UTF32_BE + text.encode("utf-32-be"))):
+            echo = (200, {"Content-Type": content_type}, body)
+            self.assertRefused(self.main(APIKEY_HEADER, plain_env(), "/x", echo, extra={"apiKey": "FAKE-key-4b8d2e61"}), "FAKE-key-4b8d2e61")
+        clean = '{"city": "Málaga"}'
+        utf16 = (200, {"Content-Type": "application/json; charset=utf-16"}, clean.encode("utf-16"))
+        record = self.assertPrinted(self.main(APIKEY_HEADER, plain_env(), "/x", utf16, extra={"apiKey": "FAKE-key-4b8d2e61"}))
+        self.assertEqual(record["body"], clean)
+
+    def test_v3_an_empty_user_is_named_as_one(self):
+        # 'basic auth from the base URL as ' ended in nothing; the Insomnia source's wording names the empty user.
+        env = plain_env(("pat", "FAKE-pat-9z8y7x6w"), base="https://:{{pat}}@api.example.com")
+        b = self.build(None, env)
+        self.assertEqual((b["auth"], b["shown_url"]), ("basic auth from the base URL, with an empty user", "https://:********@api.example.com/x"))
+        self.assertEqual(b["headers"]["Authorization"], "Basic " + postman.base64.b64encode(b":FAKE-pat-9z8y7x6w").decode())
+        self.assertEqual(self.assertPrinted(self.main(None, env, "/x", OK_JSON))["auth"], b["auth"])
+        both = {**env, "values": env["values"] + [{"key": "apiKey", "value": KEY}]}
+        self.assertEqual(self.build(APIKEY_HEADER, both)["auth"], "API key in header X-Api-Key, and basic auth from the base URL, with an empty user")
+        b = self.build(None, plain_env(base="https://@api.example.com"))  # no user and no password: nothing to mask
+        self.assertEqual((b["auth"], b["shown_url"]), ("basic auth from the base URL, with an empty user", "https://@api.example.com/x"))
+        # Basic auth with an empty user, as an Azure DevOps personal access token goes, reads the same way.
+        pat = {"type": "basic", "basic": [{"key": "username", "value": ""}, {"key": "password", "value": "{{pat}}"}]}
+        self.assertEqual(self.build(pat, plain_env(("pat", "FAKE-pat-9z8y7x6w")))["auth"], "basic auth, with an empty user")
 
 
 # --- end to end, against real hosts ---------------------------------------------------------------------------------
@@ -1149,6 +1261,38 @@ class EndToEnd(unittest.TestCase):
                                        variables={}, expect=200)
         self.assertEqual(proc.returncode, 0, text)
         self.assertEqual(json.loads(record["body"])["headers"]["X-Api-Key"], "pub12")
+
+    # The third verification's findings (see Parity's v3-tests). A body in UTF-16 is tested there only: httpbin's
+    # /base64 decodes what it serves as UTF-8 first, so it cannot answer with a UTF-16 byte order mark.
+
+    def test_v3_e2e_a_part_of_a_url_user_with_no_password_echoed_alone_is_refused(self):
+        pairs = (("prefix", "FAKE-pfx-31415926"), ("token", "FAKE-tok-27182818"))
+        for part in ("FAKE-pfx-31415926", "FAKE-tok-27182818"):
+            self.assertRefusedE2E(self.call(self.served(json.dumps({"x": part})), host="https://{{prefix}}{{token}}@httpbin.org", auth=None,
+                                            env_values=pairs, variables={}), part)
+
+    def test_v3_e2e_a_password_cut_short_by_a_slash_is_not_quoted_in_the_error(self):
+        for pw in ("Secretpart/Pass1234", "Secretpart?Pass1234", "Secretpart#Pass1234"):
+            proc, record, text = self.call("/get", host="https://amy:{{pw}}@httpbin.org", auth=None, env_values=(("pw", pw),), variables={})
+            self.assertEqual(proc.returncode, 1, text)
+            self.assertIn(postman.UNREACHED, text)
+            self.assertNotIn("Secretpart", text)
+            self.assertIsNone(record)
+
+    def test_v3_e2e_a_vars_value_matching_the_records_own_fields_does_not_refuse_it(self):
+        now = datetime.now().astimezone()
+        variables = {"apiKey": self.FAKE, "since": now.date().isoformat(), "utcDay": now.astimezone(timezone.utc).date().isoformat(),
+                     "client": "postman"}
+        proc, record, text = self.call("/status/200", host="https://httpbin.org", variables=variables, expect=200)
+        self.assertEqual(proc.returncode, 0, text)
+        self.assertEqual((record["source"], record["verdict"], record["request_headers"]["X-Api-Key"]), ("postman", "PASS", "********"))
+
+    def test_v3_e2e_an_empty_user_in_the_base_url_is_named_as_one(self):
+        proc, record, text = self.call("/status/200", host="https://:{{pat}}@httpbin.org", auth=None, env_values=(("pat", "FAKE-pat-9z8y7x6w"),),
+                                       variables={}, expect=200)
+        self.assertEqual(proc.returncode, 0, text)
+        self.assertEqual((record["auth"], record["url"]), ("basic auth from the base URL, with an empty user", "https://:********@httpbin.org/status/200"))
+        self.assertNotIn("FAKE-pat", json.dumps(record))
 
 
 if __name__ == "__main__":

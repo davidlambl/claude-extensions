@@ -24,19 +24,31 @@ They run on your machine, with your access. That is the point of them, and it is
 
 These are the properties a bug report should test against:
 
-- A key, token or certificate passphrase is never printed, written or drawn. Each api-call source keeps secrets inside its own process, masks them in the record it prints, and refuses to print at all when a secret would appear in the output in any form a response could carry it back in: as is, trimmed of surrounding whitespace, percent-encoded, or in the body with its JSON escapes decoded, which is how the image draws it. The variables substituted into a secret count as secrets in their own right.
+- A key, token or certificate passphrase is never printed, written or drawn. Each api-call source keeps secrets inside its own process and masks them in the record it prints. It refuses to print at all when a secret would appear in its output, and then `call.py` writes nothing.
+- A secret is a value in a credential position. That is an API key's value, in a header, a query parameter or a cookie; a bearer token; a basic-auth password and the basic token; any header value with a template in it; a client certificate's passphrase; and a password in the base URL's userinfo. A user that goes with no password is the credential too: a basic-auth user with a blank password, or a userinfo user alone, as in `https://TOKEN@host`, which is how GitHub takes a token. Each counts with every part substituted into it, at every depth. Every value in a `--vars` file, and every Postman environment value typed secret, is a secret wherever it lands.
+- Everything else is configuration, shown as resolved and never refused for being echoed. That covers hosts, ports, paths and the rest of the base URL, header names, an API key's name, the bearer prefix, a basic-auth user that has a password, and the environment, collection and folder names.
+- A password in the base URL is masked in the record's url by its place in the text, so nothing a template puts in the scheme, host or port can make it show.
+- A secret is looked for in its own letter case, in one layer of encoding: as is, trimmed of surrounding whitespace, percent-encoded, JSON-escaped, or as HTML character references.
 - A failed request's error is scrubbed before it is shown. Every secret in it is masked, as is, trimmed and percent-encoded, and if one would still show, the message is withheld whole.
-- A shared collection cannot add headers or a second request to the GET. Each api-call source refuses a header whose name or value holds a line break, before anything is sent.
+- The image draws the body exactly as the API returned it, so a secret can show there only in a form the sources look for. A JSON body is only re-indented, every string, number and literal copied as written. Every invisible, format, bidi and non-ASCII space character is drawn as its `\uXXXX` escape. Each row is clipped to its own height and cut with an ellipsis where it is too long, and every row runs left to right in the order its characters are written. The sources also check the body with its escapes decoded; that is defense in depth, not a description of the image.
+- The record file is ASCII-escaped JSON, so no invisible or bidi character can hide in it.
+- A collection cannot make a source resolve without end. Templates nest at most five levels deep, and a value resolves to at most 65536 characters. Past either, the call stops before anything is sent.
+- A shared collection cannot add headers or a second request to the GET. Each api-call source refuses a header whose name or value holds a line break, before anything is sent. The Insomnia source also refuses an API key cookie whose name or value would split it into two cookies.
 - A redirect is recorded as its 3xx response and never followed, so a key is sent only to the host the collection named.
-- ado-evidence sends your token only to `dev.azure.com` or `<org>.visualstudio.com` over https. It refuses any other `--org` or attachment URL, and treats a redirect as an error, never following it. An image is named by its file name alone, with no folder, drive or colon, and looked up in the images folder, so a comment cannot reach a file elsewhere, on Windows as on macOS and Linux.
+- ado-evidence sends your token only to Azure DevOps over https. It goes to the `--org`, which must be `https://dev.azure.com/<org>` or `https://<org>.visualstudio.com`, and to the attachments Azure DevOps answers with. An attachment URL must belong to that organization, at either of its two addresses, and hold no token, or the comment is not posted and the URL is never requested. It refuses any other `--org`, and treats a redirect as an error, never following it.
+- Everything ado-evidence prints has the token masked before any of it is cut short, in every form listed above for api-call.
+- ado-evidence names an image by its file name alone, with no folder, drive or colon, and looks it up in the images folder, so a comment cannot reach a file elsewhere, on Windows as on macOS and Linux.
 - Neither skill writes to Insomnia's data or Postman's exports.
 
 ## Known limits, by design
 
 These are not bugs. They are the edges of the guarantees above.
 
+- **A key belongs in the auth, not in the base URL.** A key written into the base URL's path or query, such as an Azure Functions `?code=`, is configuration to api-call. It shows in the record and the image, and a response that echoes it is printed. Put it in the auth, as an API key in a query parameter.
 - **A literal header value is not a secret to api-call.** A collection header whose value is typed in rather than drawn from a variable is shown as typed. Keep secrets in environment variables.
 - **A value under six characters is not checked for.** It cannot be told apart from ordinary text in a response body.
-- **The response body is drawn as returned.** Nothing redacts what the API sends back, so look at an image before you share it.
+- **Matching is case-sensitive.** A server echoes a credential as it was sent, so a secret in another letter case is not looked for, and is printed.
+- **One layer of encoding is looked for.** A secret encoded twice, such as percent-encoded twice or a JSON string inside a JSON string, is not found. Nor is one re-encoded in another charset: the Postman source sends a key outside ASCII as its Latin-1 bytes, and an echo of those bytes percent-encoded is printed, so keep keys ASCII. ado-evidence likewise does not mask a token encoded twice or split into pieces.
+- **The response body is drawn as returned.** Nothing redacts what the API sends back, so look at an image before you share it. Look-alike letters, such as a Cyrillic e in place of a Latin one, are drawn as sent.
 - **Posting acts as you.** Preview with `--dry-run` and approve the text before it goes up.
 - **An eval or screenshot run calls real endpoints and real models** with your credentials.

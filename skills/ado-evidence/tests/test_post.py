@@ -1112,5 +1112,21 @@ class OverTheNetwork(unittest.TestCase):
         self.assertEqual([urllib.parse.urlsplit(r.full_url).hostname for r in self.seen.requests], ["httpbin.org"])
 
 
+
+class AttachmentPathIsAscii(unittest.TestCase):
+    """The attachment path is compared ignoring case in ASCII only. Unicode case folding would let a dotless i
+    (U+0131) stand for the i of _apis, so a path no attachment has would pass."""
+
+    GUID = "0f8fad5b-d9cb-469f-a165-70867728950e"
+
+    def test_a_path_with_a_non_ascii_letter_is_refused(self):
+        post = load_post()
+        org = "https://dev.azure.com/contoso"
+        good = {"url": f"https://dev.azure.com/contoso/_apis/wit/attachments/{self.GUID}"}
+        self.assertTrue(post.attachment_url("a.png", good, org, "Widgets").startswith("https://dev.azure.com/contoso/"))
+        odd = {"url": f"https://dev.azure.com/contoso/_ap\u0131s/wit/attachments/{self.GUID}"}
+        with self.assertRaises(post.Problem):
+            post.attachment_url("a.png", odd, org, "Widgets")
+
 if __name__ == "__main__":
     unittest.main()

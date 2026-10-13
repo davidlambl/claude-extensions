@@ -27,17 +27,21 @@ shows each secret as ********, and a secret inside what is otherwise shown (a --
 the password of a user:password@ in the base URL is found in the URL as resolved, so a template cannot hide it from
 the mask. The script refuses to print if any secret would appear in its output or in the image drawn from it: as it
 is or trimmed of the whitespace a server trims from a header, plain, URL-encoded or escaped, and in the body as text
-or with its JSON, URL or HTML escapes decoded; matching is case-sensitive. An error's message is masked for the same
-forms, and withheld when it cannot be; it never names a variable found inside another variable's value. An API key
-or bearer token that resolves empty, a basic auth password templated to an empty value or one whose user is empty
-too, or a header value a request cannot carry (a newline at the end of a pasted key, say), stops the call before
-anything is sent, with a message that does not quote the value. A redirect is recorded as the response, never
-followed, so a key is sent only to the host the collection named. When the base URL variable is not defined, the one
-variable whose name matches it ignoring case is used, if there is exactly one (a collection written for baseURL).
-A limit: a key outside ASCII is sent as its Latin-1 bytes, and an echo of those bytes percent-encoded (%E4 for ä) is
-not looked for, so keep keys ASCII.
+or with its JSON, URL or HTML escapes decoded; matching is case-sensitive. The record's own fields are not checked:
+its source, method and times, and the environment, collection and folder names, which are labels; none holds anything
+from a variable. The body is read as the Insomnia source reads it: by its byte order mark, then by the charset it
+declares, then as UTF-8. An error's message is masked for the same forms, and withheld when it cannot be; it never
+names a variable found inside another variable's value. When the base URL holds an @ after its scheme, a failed
+request's message quotes none of the URL: a / ? or # left unencoded in a password ends the userinfo early, and the
+error would quote what came before it. An API key or bearer token that resolves empty, a basic auth password templated
+to an empty value or one whose user is empty too, or a header value a request cannot carry (a newline at the end of a
+pasted key, say), stops the call before anything is sent, with a message that does not quote the value. A redirect is
+recorded as the response, never followed, so a key is sent only to the host the collection named. When the base URL
+variable is not defined, the one variable whose name matches it ignoring case is used, if there is exactly one (a
+collection written for baseURL). A limit: a key outside ASCII is sent as its Latin-1 bytes, and an echo of those bytes
+percent-encoded (%E4 for ä) is not looked for, so keep keys ASCII.
 """
-import argparse, base64, html, json, os, re, ssl, sys, time, urllib.error, urllib.parse, urllib.request
+import argparse, base64, email.message, html, json, os, re, ssl, sys, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -56,6 +60,17 @@ SCHEMA = re.compile(r"/v2\.[01]\.0/")
 AUTHORITY = re.compile(r"([^/?#]*://)?([^/?#]*)(.*)", re.DOTALL)
 DEPTH = 5  # how deep a variable's value may hold templates of its own
 LONGEST = 65536  # characters a resolved value may run to: a crafted export cannot make one grow without end
+# The record's own fields: written by this script (its name, the method, the times) or labels typed in the exports and
+# never resolved (the environment, collection and folder names). None holds anything from a variable, so a secret that
+# matches one, a --vars value that is today's date or the word postman, is no reason to refuse; the Insomnia source
+# leaves out its labels and times too. The record's field names are left out with them.
+OWN = ("source", "environment", "collection", "folder", "method", "sent", "sent_utc")
+# The byte order marks a body may start with, as the Insomnia source's ConvertFrom-Body looks for them: UTF-32 LE ahead
+# of UTF-16 LE, whose mark begins it.
+BOMS = ((b"\xef\xbb\xbf", "utf-8"), (b"\xff\xfe\x00\x00", "utf-32-le"), (b"\xff\xfe", "utf-16-le"),
+        (b"\xfe\xff", "utf-16-be"), (b"\x00\x00\xfe\xff", "utf-32-be"))
+UNREACHED = ("the request failed: the base URL holds credentials that could not be parsed or reached; "
+             "percent-encode any / ? # or @ in its user or password")
 
 
 class Problem(Exception):
@@ -133,16 +148,18 @@ def hide(text, secrets):
     return text
 
 
-def resolve(text, variables, used=None):
-    """text with each {{name}} replaced from variables. A variable whose value holds templates of its own is
-    resolved first, up to five deep; one that names itself, or an unknown or dynamic name, raises Problem. The
-    Problem names an unknown variable only when text itself names it: a name inside a variable's value is part of
-    that value, which may be a secret. Each variable substituted, at any depth, is appended to `used` fully resolved
-    when given, so a secret's parts are known as well as its whole."""
+def resolution(text, variables, used=None):
+    """text with each {{name}} replaced from variables, as (value, subs): subs lists each value substituted into text
+    itself, as (where it starts in value, its own resolution), and so on down. A variable whose value holds templates
+    of its own is resolved first, up to five deep; one that names itself, or an unknown or dynamic name, raises
+    Problem. The Problem names an unknown variable only when text itself names it: a name inside a variable's value is
+    part of that value, which may be a secret. Each variable substituted, at any depth, is appended to `used` fully
+    resolved when given, so a secret's parts are known as well as its whole."""
     resolved = {}
 
     def expand(text, within):
-        def substitute(m):
+        pieces, subs, length, at = [], [], 0, 0
+        for m in TEMPLATE.finditer(text):
             name = m.group(1)
             if name not in variables:
                 raise Problem(f"variable '{name}' is not in the environment or the collection" if not within else
@@ -152,18 +169,44 @@ def resolve(text, variables, used=None):
                     raise Problem("a value uses a template this script cannot resolve")
                 resolved[name] = expand(str(variables[name]), within + (name,))
                 if used is not None:
-                    used.append(resolved[name])
-            return resolved[name]
-
-        value = TEMPLATE.sub(substitute, text)
+                    used.append(resolved[name][0])
+            sub = resolved[name]
+            pieces += [text[at:m.start()], sub[0]]
+            length += m.start() - at
+            if sub[0]:
+                subs.append((length, sub))
+            length += len(sub[0])
+            at = m.end()
+        pieces.append(text[at:])
+        value = "".join(pieces)
         if len(value) > LONGEST:
             raise Problem(f"a value resolves to more than {LONGEST} characters")
-        return value
+        return value, subs
 
-    value = expand("" if text is None else str(text), ())
-    if "{{" in value:
+    node = expand("" if text is None else str(text), ())
+    if "{{" in node[0]:
         raise Problem("a value uses a template this script cannot resolve")
-    return value
+    return node
+
+
+def resolve(text, variables, used=None):
+    """text with each {{name}} replaced from variables (see resolution)."""
+    return resolution(text, variables, used)[0]
+
+
+def parts_within(node, start, end, into):
+    """Every value substituted into the characters from start to end of a resolution's value (see resolution), at
+    any depth, appended to `into`: one that lies wholly inside, with every part of its own; and of one that runs
+    across an edge, the piece inside and those of its own parts that lie inside that piece. As the Insomnia source's
+    Add-PartsWithin: a credential's parts are found by where they were substituted, never by matching their text."""
+    value, subs = node
+    for at, sub in subs:
+        if at >= end:
+            break
+        lo, hi = max(start, at), min(end, at + len(sub[0]))
+        if lo < hi:
+            into.append(value[lo:hi])
+            parts_within(sub, lo - at, hi - at, into)
 
 
 def split_userinfo(url):
@@ -294,16 +337,20 @@ def build(collection, environment, extra, folder_name, base_url_var, path):
             pass  # unresolvable: if the request uses it, resolving it there says so
     base_url_var = base_url_variable(variables, base_url_var)
     # The base URL is configuration, shown as resolved; only a user:password@ in it holds a credential.
-    base_parts = []
-    base = resolve(variables[base_url_var], variables, base_parts).rstrip("/")
+    base_tree = resolution(variables[base_url_var], variables)
+    base = base_tree[0].rstrip("/")
     if not base.startswith("https://"):
         raise Problem(f"'{base_url_var}' must be an https:// URL")
     scheme, url_user, url_password, host_on = split_userinfo(base)  # http.client cannot send it; Postman sends basic auth
+    credential = []  # the userinfo's credential, and every part a template put into it, found by where it went
     if url_password:
-        secrets += [url_password, urllib.parse.unquote(url_password)]
-        secrets += [p for p in base_parts if p and p in url_password]  # what a template put into the password
+        start = len(scheme) + len(url_user) + 1
+        credential = [url_password]
+        parts_within(base_tree, start, start + len(url_password), credential)
     elif url_user is not None:  # https://KEY@host, or KEY:@host: with no password, the user is the credential
-        secrets += [url_user, urllib.parse.unquote(url_user)]
+        credential = [url_user]
+        parts_within(base_tree, len(scheme), len(scheme) + len(url_user), credential)
+    secrets += [form for c in credential for form in (c, urllib.parse.unquote(c))]
     if not path.startswith("/"):
         path = "/" + path
     folder = pick_folder(collection, folder_name)
@@ -348,7 +395,8 @@ def build(collection, environment, extra, folder_name, base_url_var, path):
         if not password:  # the user is the credential, as with curl -u key:
             secrets += [user] + user_parts
         headers["Authorization"], shown["Authorization"] = f"Basic {token}", f"Basic {MASK}"
-        auth_text = f"basic auth as {hide(user, secrets) if password else MASK}"
+        auth_text = (f"basic auth as {hide(user, secrets) if password else MASK}" if user
+                     else "basic auth, with an empty user")
     elif kind != "noauth":
         raise Problem(f"auth type '{kind}' is not supported (API key, bearer and basic only)")
     if url_user is not None and not any(h.lower() == "authorization" for h in headers):
@@ -357,12 +405,13 @@ def build(collection, environment, extra, folder_name, base_url_var, path):
         token = base64.b64encode(f"{user}:{urllib.parse.unquote(url_password or '')}".encode("utf-8")).decode("ascii")
         secrets.append(token)
         headers["Authorization"], shown["Authorization"] = f"Basic {token}", f"Basic {MASK}"
-        via = f"basic auth from the base URL as {hide(url_user, secrets) if url_password else MASK}"
+        via = (f"basic auth from the base URL as {hide(url_user, secrets) if url_password else MASK}" if url_user
+               else "basic auth from the base URL, with an empty user")  # the Insomnia source's wording
         auth_text = via if auth_text == "none" else f"{auth_text}, and {via}"
     shown_base = scheme + host_on
     if url_user is not None:  # the password masked by its place in the URL as resolved, and the user when it is the key
-        shown_base = (scheme + (url_user if url_password else MASK) + ("" if url_password is None else ":" + MASK)
-                      + "@" + host_on)
+        shown_base = (scheme + (MASK if url_user and not url_password else url_user)
+                      + ("" if url_password is None else ":" + MASK) + "@" + host_on)
     url, shown_url = encoded(scheme + host_on + path), encoded(hide(shown_base, secrets) + path)
     if query:
         joiner = "&" if "?" in url else "?"
@@ -370,16 +419,21 @@ def build(collection, environment, extra, folder_name, base_url_var, path):
         shown_url += joiner + hide(urllib.parse.quote_plus(query), secrets) + "=" + MASK
     return {"url": url, "shown_url": shown_url, "headers": headers, "shown_headers": shown, "auth": auth_text,
             "folder": folder.get("name") if folder is not None else None, "path": path,
-            "secrets": list(dict.fromkeys(s for s in secrets if s))}
+            "secrets": list(dict.fromkeys(s for s in secrets if s)),
+            # An @ after the scheme may be userinfo that a / ? or # in it kept split_userinfo from finding: then an
+            # error from the request can quote a credential nothing knows to mask (see main).
+            "userinfo": "@" in base[len(scheme):]}
 
 
 def texts(record):
-    """Every string the record shows: its values, its header names and values, the record as JSON, and the body as
-    a renderer draws it, pretty-printed when it is JSON."""
-    out = [v for v in record.values() if isinstance(v, str)]
-    for d in (record.get("request_headers") or {}, record.get("response_headers") or {}):
-        out += [str(k) for k in d] + [str(v) for v in d.values()]
-    out.append(json.dumps(record, ensure_ascii=False))
+    """Every string the record shows that came from the request or the response: each value but the record's own
+    fields (see OWN), its request headers' names and values, its response headers' values, all of them as JSON
+    writes them, and the body as a renderer draws it, pretty-printed when it is JSON."""
+    out = [v for k, v in record.items() if isinstance(v, str) and k not in OWN]
+    request = record.get("request_headers") or {}
+    out += [str(k) for k in request] + [str(v) for v in request.values()]
+    out += [str(v) for v in (record.get("response_headers") or {}).values()]  # the names are the four this script picks
+    out.append(json.dumps(out, ensure_ascii=False))
     try:
         out.append(json.dumps(json.loads(record.get("body") or ""), indent=2, ensure_ascii=False))
     except (ValueError, RecursionError):
@@ -414,6 +468,25 @@ def send(url, headers, cert, key, timeout):
     except urllib.error.HTTPError as e:  # a status of 300 or more, a redirect among them
         body, status, response_headers = e.read(), e.code, e.headers
     return status, response_headers, body, round((time.perf_counter() - start) * 1000), sent
+
+
+def body_text(body, content_type):
+    """The body as text, as the Insomnia source's ConvertFrom-Body reads it: a byte order mark wins (UTF-8, or UTF-16
+    or UTF-32 in either byte order) and is dropped, since one before a JSON body would keep it from pretty-printing;
+    then the charset Content-Type declares, if Python knows it; else UTF-8. An unknown charset, such as a misspelling,
+    is no reason to lose a response, and a byte that does not decode reads as U+FFFD."""
+    for bom, codec in BOMS:
+        if body.startswith(bom):
+            return body[len(bom):].decode(codec, "replace")
+    message = email.message.Message()
+    message["Content-Type"] = content_type or ""
+    charset = (message.get_content_charset() or "").strip().strip("\"'")
+    if charset:
+        try:
+            return body.decode(charset, "replace")
+        except (LookupError, UnicodeError):  # unknown, not a text encoding (base64), or one that never decodes
+            pass
+    return body.decode("utf-8", "replace")
 
 
 def utf8_output():
@@ -461,6 +534,8 @@ def main():
     except Problem as e:
         sys.exit(scrub(str(e), secrets))
     except Exception as e:  # a failed request's message can quote the URL, and with it a key in the query
+        if b["userinfo"]:  # it may quote a password that a / ? or # cut short, which no secret masks (nonnumeric port)
+            sys.exit(UNREACHED)
         sys.exit(f"the request failed: {type(e).__name__}: {scrub(str(e), secrets)}")
     record = {
         "source": "postman",
@@ -478,7 +553,7 @@ def main():
         "sent": sent.isoformat(timespec="milliseconds"),
         "sent_utc": sent.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{sent.microsecond // 1000:03d}Z",
         "response_headers": {h: response_headers[h] for h in ("Content-Type", "Content-Length", "Date", "Location") if response_headers.get(h)},
-        "body": body.decode("utf-8-sig", errors="replace"),  # a BOM before a JSON body would keep it from pretty-printing
+        "body": body_text(body, response_headers.get("Content-Type")),
     }
     if exposed(record, secrets):
         sys.exit("refusing to print: a secret would appear in the output")
