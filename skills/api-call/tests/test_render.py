@@ -660,6 +660,31 @@ MEASURE = """<script>(() => {
 })()</script>"""
 
 
+
+class WindowFrame(unittest.TestCase):
+    """The capture's window frame follows the system it is taken on, unless --frame names one: a screenshot taken on
+    Windows used to draw the macOS frame, traffic-light dots and all."""
+
+    def test_auto_follows_the_system(self):
+        for platform, look in (("win32", "windows"), ("cygwin", "windows"), ("darwin", "mac"), ("linux", "linux")):
+            with self.subTest(platform=platform), patch.object(render.sys, "platform", platform):
+                self.assertEqual(render.look_for(), look)
+                self.assertEqual(render.look_for("auto"), look)
+
+    def test_a_named_frame_is_used_and_an_unknown_one_refused(self):
+        for look in render.LOOKS:
+            self.assertEqual(render.look_for(look), look)
+        with self.assertRaises(render.Problem):
+            render.look_for("beos")
+
+    def test_each_look_fills_the_frame(self):
+        for look in render.LOOKS:
+            with self.subTest(look=look):
+                page = render.page("A {{look}} title", "<span>body</span>", look)
+                self.assertIn(f'<div class="window {look}">', page)
+                self.assertIn("A {{look}} title", page)  # a placeholder in the title is drawn as text
+                self.assertEqual(page.count("{{"), 1)
+
 class InTheBrowser(unittest.TestCase):
     """Round 3: what the browser draws from the page render() writes, checked in the real browser, since only it can
     show it. Skipped where no browser is found or it cannot capture a page."""
@@ -681,7 +706,7 @@ class InTheBrowser(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def shoot(self, record, name):
+    def shoot(self, record, name, frame=None):
         """render.render in the real browser: the image and the window size it was captured at."""
         argv, real = [], subprocess.run
 
@@ -689,13 +714,13 @@ class InTheBrowser(unittest.TestCase):
             argv[:] = command
             return real(command, **kwargs)
         with patch.object(render.subprocess, "run", run):
-            png = render.render(record, Path(self.tmp.name) / f"{name}.png")
+            png = render.render(record, Path(self.tmp.name) / f"{name}.png", frame=frame)
         size = next(a for a in argv if a.startswith("--window-size=")).split("=", 1)[1]
         return png, tuple(int(n) for n in size.split(","))
 
-    def measure(self, record, name, targets=()):
+    def measure(self, record, name, targets=(), frame=None):
         """The layout the browser makes of the page render.render writes for record, at the window size it captures."""
-        png, (width, height) = self.shoot(record, name)
+        png, (width, height) = self.shoot(record, name, frame)
         page = png.with_name(f"{name}-measured.html")
         page.write_bytes(png.with_suffix(".html").read_bytes() + MEASURE.replace("TARGETS", json.dumps(list(targets))).encode())
         proc = subprocess.run([self.browser, "--headless=new", "--disable-gpu", "--hide-scrollbars",
@@ -706,6 +731,21 @@ class InTheBrowser(unittest.TestCase):
         laid = json.loads(base64.b64decode(found[1]).decode("utf-8"))
         self.assertEqual(laid["width"], width)
         return laid
+
+    def test_each_frame_keeps_the_bar_height_and_places_its_title(self):
+        # Every look's bar is 37px, so the rows sit where size() counts them; the Windows title starts at the left, as
+        # Windows draws it, and the macOS and Linux titles are centred.
+        title = "Frame check - GET /x"
+        for look in render.LOOKS:
+            with self.subTest(look=look):
+                record = {**RECORD, "label": "Frame check", "path": "/x"}
+                laid = self.measure(record, f"frame-{look}", [title], look)
+                self.assertEqual(laid["rows"][0]["top"], render.TITLE_BAR + 10)
+                left = laid["at"][title]["lefts"][0]
+                if look == "windows":
+                    self.assertLess(left, 40)
+                else:
+                    self.assertGreater(left, 80)
 
     def test_driver_each_row_is_a_clipped_block_of_one_row(self):
         record = {**RECORD, "body": WIDE_LINES[0] + "\nnext"}

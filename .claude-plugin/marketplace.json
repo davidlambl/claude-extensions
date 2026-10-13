@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "davidlambl",
   "owner": { "name": "David Lambl" },
-  "metadata": { "description": "David Lambl's Claude Code mods, skills and plugins." },
+  "metadata": { "description": "David Lambl's Claude Code mods and skills." },
   "plugins": [
     {
       "name": "context-bar",

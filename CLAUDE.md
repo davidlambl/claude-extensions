@@ -1,6 +1,6 @@
 # Claude extensions
 
-Claude Code mods, skills and plugins. The repo is a plugin marketplace: list every extension in `.claude-plugin/marketplace.json`. README.md has the layout and the commands.
+Claude Code mods and skills, each packaged as a plugin. The repo is a plugin marketplace: list every extension in `.claude-plugin/marketplace.json`. README.md has the layout and the commands.
 
 ## Mods
 

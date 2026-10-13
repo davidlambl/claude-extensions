@@ -8,6 +8,8 @@ Options:
   --warm               send the call once untimed first, so a cold start does not show
   --label TEXT         the window title's lead, e.g. "After: Test"; the environment's name otherwise
   --shot               also draw the exchange and capture it as NAME.png
+  --frame LOOK         the screenshot's window frame: auto (the system this runs on, the default), mac, windows
+                       or linux
   --folder NAME        the collection's top-level folder that carries the auth, when it has more than one
   --base-url-var NAME  the variable holding the base URL (default baseUrl)
   --timeout SECONDS    how long to wait for the response (default 60)
@@ -42,6 +44,7 @@ p.add_argument("--expect", type=int)
 p.add_argument("--warm", action="store_true")
 p.add_argument("--label")
 p.add_argument("--shot", action="store_true")
+p.add_argument("--frame", choices=("auto", "mac", "windows", "linux"), default="auto")
 p.add_argument("--folder")
 p.add_argument("--base-url-var", default="baseUrl")
 p.add_argument("--timeout", type=int, default=60)
@@ -132,7 +135,7 @@ def shoot(r, record):
     """Draws the record and captures it as NAME.png. The record is on disk already, so whatever stops the drawing (no
     browser, one that fails, a record it cannot draw) loses nothing: the script stops with exit 1 and names the record."""
     try:
-        return render.render(r, out / f"{args.name}.png")
+        return render.render(r, out / f"{args.name}.png", frame=args.frame)
     except Exception as e:
         why = str(e) if isinstance(e, render.Problem) else f"{type(e).__name__}: {e}"
         outcome = f"HTTP {r['status']}" + (f" ({r['verdict']} against --expect {r['expected']})" if r["verdict"] else "")

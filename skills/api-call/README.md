@@ -7,8 +7,8 @@ It comes as a skill: ask Claude to run a ticket's API test steps, to check an en
 ## How it works
 
 1. A source resolves the request, sends it, and prints the record. `sources/insomnia.ps1` reads Insomnia's local data (read-only): the base URL and variables from a global environment, with the top-level folder's own environment laid over it as Insomnia does, the API key or bearer auth on that folder, its headers, and the client certificate the collection holds for the host. `sources/postman.py` reads a Postman environment export and a collection export: their variables, and the API key, bearer or basic auth on the collection or on a top-level folder. Each keeps every secret inside its own process and refuses to print anything that would contain one.
-2. `call.py` runs the source, checks the status against `--expect`, and writes the record as `<name>.json`. With `--shot`, it draws the record in the window frame and captures it with headless Chrome as `<name>.png`.
-3. `render.py` is that drawing on its own: a record in, an image out. Its `frame.html` is the window frame, which [`tools/screenshots`](../../tools/screenshots/) in this repository shares.
+2. `call.py` runs the source, checks the status against `--expect`, and writes the record as `<name>.json`. With `--shot`, it draws the record in a terminal window frame and captures it with headless Chrome as `<name>.png`. The frame looks like the system the capture is taken on: a Windows window on Windows, a macOS window on a Mac, a GNOME window on Linux.
+3. `render.py` is that drawing on its own: a record in, an image out. Its `frame.html` holds the three window frames, which [`tools/screenshots`](../../tools/screenshots/) in this repository shares.
 
 ## The record
 
@@ -83,6 +83,7 @@ python3 skills/api-call/scripts/render.py shots/widget.json --title "After: Test
 | `--expect CODE` | The status the step should return. A mismatch exits 3; the record and the image are still written. |
 | `--warm` | Sends once untimed first, so a cold start does not show in the timing. |
 | `--shot` | Draws the exchange and captures it as `<name>.png`, with its `.html` page beside it. The record is written first, so if the capture fails the record is kept, without `png`, and the script exits 1 with a message naming the record and the status. |
+| `--frame LOOK` | The screenshot's window frame: `windows`, `mac` or `linux`. The default, `auto`, is the system the capture is taken on. `render.py` takes the same flag. |
 | `--label TEXT` | Leads the image's title, such as `After: Test`; the environment's name otherwise. |
 | `--folder NAME` | The collection's top-level folder that carries the auth, when more than one does. The Insomnia source uses a folder's environment and headers only when it carries auth or is named here. |
 | `--base-url-var NAME` | The variable holding the base URL, when it is not `baseUrl`. Variable names are case-sensitive. When the one named is not defined, the one variable whose name matches it ignoring case is used, such as `baseURL`; with two or more, the message names them. The Insomnia source does this only for `baseUrl`. |

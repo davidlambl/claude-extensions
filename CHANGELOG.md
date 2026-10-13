@@ -34,6 +34,10 @@ To take a new version: `claude plugin marketplace update davidlambl`, then `clau
 
 Replaces api-shots, which was published briefly at 0.1.0 and 0.1.1 and did the same job for Insomnia only, with Azure DevOps posting built in. The posting half is now [ado-evidence](skills/ado-evidence/).
 
+### 0.2.7 — 2026-10-13
+
+- A screenshot's window frame looks like the system it is taken on: a Windows window on Windows, a macOS window on a Mac, a GNOME window on Linux. It was always the macOS frame. `--frame windows`, `mac` or `linux` picks another, on `call.py` and `render.py`.
+
 ### 0.2.6 — 2026-10-13
 
 Secret fixes. Earlier versions said a source never prints, writes or draws a secret, that the variables substituted into one are secrets in their own right, and that a failed request's error is scrubbed. These cases broke that, and are fixed:
@@ -145,6 +149,10 @@ In the docs:
 ## ado-evidence
 
 Split out of api-shots, so that where the records and images go is the user's choice.
+
+### 0.1.5 — 2026-10-13
+
+- The demo screenshot's window frame looks like the system it is taken on, as api-call's does.
 
 ### 0.1.4 — 2026-10-13
 

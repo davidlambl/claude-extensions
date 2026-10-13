@@ -9,6 +9,8 @@ const { Terminal } = xterm
 
 // The window frame belongs to the api-call skill, so that an installed copy of the skill carries it;
 // this tool, which only runs from the repository, reads it in place.
+// The frame's look follows the system the session runs on, as api-call's render.py picks it.
+const LOOK = process.platform === 'darwin' ? 'mac' : process.platform === 'win32' ? 'windows' : 'linux'
 const FRAME_FILE = join(dirname(fileURLToPath(import.meta.url)), '../../skills/api-call/skills/api-call/scripts/frame.html')
 
 // The frame's text and background, for cells drawn inverse.
@@ -111,8 +113,8 @@ function keptRows(text) {
 /** The frame with the title and the screen's HTML in place; a function replacement keeps `$` in them literal. */
 function page(title, body) {
   // One pass, so a {{body}} inside the title is not filled with the screen.
-  const fill = { title: escape(title), body }
-  return readFileSync(FRAME_FILE, 'utf8').replace(/\{\{(title|body)\}\}/g, (_, k) => fill[k])
+  const fill = { title: escape(title), body, look: LOOK }
+  return readFileSync(FRAME_FILE, 'utf8').replace(/\{\{(title|body|look)\}\}/g, (_, k) => fill[k])
 }
 
 /**

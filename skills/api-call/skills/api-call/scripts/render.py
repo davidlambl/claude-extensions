@@ -1,7 +1,7 @@
 """Draws an api-call record in the terminal window frame and captures it with headless Chrome.
 
 Usage:
-  python3 render.py RECORD.json [--out FILE.png] [--title TEXT]
+  python3 render.py RECORD.json [--out FILE.png] [--title TEXT] [--frame auto|mac|windows|linux]
 
 Writes the image and, beside it, the .html page it was captured from; the default name is the record's with .png.
 The frame is frame.html next to this script, which tools/screenshots in this repository shares.
@@ -33,7 +33,8 @@ IGNORABLE = ((0x034F, 0x034F), (0x115F, 0x1160), (0x17B4, 0x17B5), (0x180B, 0x18
              (0xFE00, 0xFE0F), (0xFFA0, 0xFFA0), (0xE0100, 0xE01EF))
 BLANK = "\u2800"  # the Braille pattern with no dots: a symbol (So) that draws as a space
 OBJECT = "\ufffc"  # the object replacement character: a symbol (So) that many fonts draw as a space
-PLACEHOLDER = re.compile(r"\{\{(title|body)\}\}")  # what page() fills in frame.html
+PLACEHOLDER = re.compile(r"\{\{(title|body|look)\}\}")  # what page() fills in frame.html
+LOOKS = ("mac", "windows", "linux")  # the window frames frame.html draws
 
 
 class Problem(Exception):
@@ -285,15 +286,29 @@ def markup(drawn):
                    else f'<span class="row">{html.escape(t)}</span>' for c, t in drawn)
 
 
-def page(title, body):
-    """The frame with the title (made visible() and escaped here) and the body's HTML in place. Both are filled in one
-    pass over the frame, so a placeholder written in the title or the body is drawn as text and never filled."""
-    fill = {"title": html.escape(visible(title)), "body": body}
+def look_for(frame=None):
+    """The window frame to draw: mac, windows or linux. auto, or none given, is the system this runs on, so a capture
+    taken on Windows looks like a Windows window."""
+    if frame in (None, "auto"):
+        if sys.platform.startswith("win") or sys.platform == "cygwin":
+            return "windows"
+        return "mac" if sys.platform == "darwin" else "linux"
+    if frame not in LOOKS:
+        raise Problem(f"the frame must be auto, {', '.join(LOOKS)}, not {frame!r}")
+    return frame
+
+
+def page(title, body, frame=None):
+    """The frame, in the look look_for() picks, with the title (made visible() and escaped here) and the body's HTML in
+    place. All are filled in one pass over the frame, so a placeholder written in the title or the body is drawn as
+    text and never filled."""
+    fill = {"title": html.escape(visible(title)), "body": body, "look": look_for(frame)}
     return PLACEHOLDER.sub(lambda m: fill[m[1]], FRAME.read_text(encoding="utf-8"))
 
 
-def render(r, png, title=None):
-    """Writes png, and its .html page beside it, for the record r. Returns png as an absolute path.
+def render(r, png, title=None, frame=None):
+    """Writes png, and its .html page beside it, for the record r, in the window frame look_for(frame) picks. Returns
+    png as an absolute path.
     Raises Problem when no browser is found or the browser does not deliver the image."""
     png = Path(png).resolve()  # the page is given to the browser as a file URI, which only an absolute path has
     drawn = rows(r)
@@ -301,7 +316,7 @@ def render(r, png, title=None):
     page_file = png.with_suffix(".html")
     # Encoded before the file is opened, so a character UTF-8 cannot hold never leaves the page cut short; visible()
     # has shown every lone surrogate already, and backslashreplace would write one the same way.
-    page_file.write_bytes(page(title or title_for(r), body).encode("utf-8", "backslashreplace"))
+    page_file.write_bytes(page(title or title_for(r), body, frame).encode("utf-8", "backslashreplace"))
     width, height = size(drawn)
     if png.exists():
         png.unlink()
@@ -325,11 +340,13 @@ def main():
     p.add_argument("record")
     p.add_argument("--out")
     p.add_argument("--title")
+    p.add_argument("--frame", choices=("auto",) + LOOKS, default="auto",
+                   help="the window frame: auto (the system this runs on), mac, windows or linux")
     args = p.parse_args()
     record = Path(args.record)
     r = json.loads(record.read_text(encoding="utf-8"))
     try:
-        print(render(r, args.out or record.with_suffix(".png"), args.title))
+        print(render(r, args.out or record.with_suffix(".png"), args.title, args.frame))
     except Problem as e:
         sys.exit(str(e))
 

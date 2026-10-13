@@ -2,7 +2,7 @@
 
 [![check](https://github.com/davidlambl/claude-extensions/actions/workflows/check.yml/badge.svg)](https://github.com/davidlambl/claude-extensions/actions/workflows/check.yml)
 
-Mods, skills and plugins for [Claude Code](https://claude.com/claude-code). The repository is also a plugin marketplace, so everything in it installs with one command. Each extension has its own folder and README, which says what it needs and what it touches.
+Mods and skills for [Claude Code](https://claude.com/claude-code), each packaged as a plugin. The repository is also a plugin marketplace, so each one installs with one command. Each extension has its own folder and README, which says what it needs and what it touches.
 
 | Extension | Kind | What it does |
 | --- | --- | --- |

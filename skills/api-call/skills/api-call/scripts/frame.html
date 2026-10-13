@@ -1,8 +1,28 @@
-<!doctype html><!-- The terminal window frame. The title placeholder takes the escaped title, the body placeholder the HTML inside the pre: lines joined by line breaks, or one element of class row per line, which render.py draws. A capture is 37px of title bar, 22px of padding and 20px per row, as tools/screenshots/render.mjs counts them. The title, the pre and every row are drawn left to right in the order their characters are written, so no right-to-left letter can reorder them; the title and a row are cut with an ellipsis where they overflow, and a row is clipped to its 20px, so nothing drawn in one can reach another. --><meta charset="utf-8"><style>
+<!doctype html><!-- The terminal window frame. The title placeholder takes the escaped title, the body placeholder the HTML inside the pre: lines joined by line breaks, or one element of class row per line, which render.py draws. The look placeholder takes mac, windows or linux: the window's title bar and fonts, drawn as that system draws a dark terminal window. Every look's bar is 36px with a 1px border, so a capture is 37px of title bar, 22px of padding and 20px per row in each, as tools/screenshots/render.mjs counts them. The title, the pre and every row are drawn left to right in the order their characters are written, so no right-to-left letter can reorder them; the title and a row are cut with an ellipsis where they overflow, and a row is clipped to its 20px, so nothing drawn in one can reach another. --><meta charset="utf-8"><style>
 html,body{margin:0;background:#1c1c1f}
 .bar{height:36px;display:flex;align-items:center;position:relative;background:#2a2a2e;border-bottom:1px solid #111}
-.dots{position:absolute;left:14px;display:flex;gap:8px}.dots i{width:12px;height:12px;border-radius:50%;display:block}
-.title{flex:1;min-width:0;padding:0 80px;text-align:center;color:#a1a1aa;font:13px "SF Mono",Menlo,"Cascadia Mono",Consolas,monospace;white-space:pre;overflow:hidden;text-overflow:ellipsis;direction:ltr;unicode-bidi:bidi-override}
+.title{flex:1;min-width:0;color:#a1a1aa;font:13px "SF Mono",Menlo,"Cascadia Mono",Consolas,monospace;white-space:pre;overflow:hidden;text-overflow:ellipsis;direction:ltr;unicode-bidi:bidi-override}
 pre{margin:0;padding:10px 18px 12px;color:#e4e4e7;font:15px/20px "SF Mono",Menlo,"Cascadia Mono",Consolas,monospace;white-space:pre;direction:ltr;unicode-bidi:bidi-override}
 .row{display:block;height:20px;overflow:hidden;text-overflow:ellipsis;direction:ltr;unicode-bidi:bidi-override}
-</style><div class="bar"><div class="dots"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div><div class="title">{{title}}</div></div><pre>{{body}}</pre>
+.dots,.controls{display:none}
+.controls i{display:block;position:relative}
+.mac .dots{display:flex;position:absolute;left:14px;gap:8px}.mac .dots i{width:12px;height:12px;border-radius:50%;display:block}
+.mac .title{padding:0 80px;text-align:center}
+.windows .bar{background:#202020;border-bottom-color:#0c0c0c}
+.windows .title{padding:0 152px 0 14px;text-align:left;color:#cccccc;font:12px "Segoe UI",system-ui,sans-serif}
+.windows .controls{display:flex;position:absolute;right:0;top:0}
+.windows .controls i{width:46px;height:36px}
+.windows .min::before{content:"";position:absolute;left:18px;top:18px;width:10px;height:1px;background:#cccccc}
+.windows .max::before{content:"";position:absolute;left:18px;top:13px;width:8px;height:8px;border:1px solid #cccccc}
+.windows .close::before,.windows .close::after{content:"";position:absolute;left:17px;top:18px;width:12px;height:1px;background:#cccccc;transform:rotate(45deg)}
+.windows .close::after{transform:rotate(-45deg)}
+.windows pre{font-family:"Cascadia Mono",Consolas,"Courier New",monospace}
+.linux .bar{background:#303030;border-bottom-color:#1e1e1e}
+.linux .title{padding:0 56px;text-align:center;color:#e0e0e0;font:bold 13px Cantarell,Ubuntu,"DejaVu Sans",sans-serif}
+.linux .controls{display:flex;position:absolute;right:8px;top:6px}
+.linux .min,.linux .max{display:none!important}
+.linux .close{width:24px;height:24px;border-radius:50%;background:#444444}
+.linux .close::before,.linux .close::after{content:"";position:absolute;left:7px;top:11px;width:10px;height:2px;background:#e0e0e0;transform:rotate(45deg)}
+.linux .close::after{transform:rotate(-45deg)}
+.linux pre{font-family:"DejaVu Sans Mono","Ubuntu Mono","Liberation Mono",monospace}
+</style><div class="window {{look}}"><div class="bar"><div class="dots"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div><div class="title">{{title}}</div><div class="controls"><i class="min"></i><i class="max"></i><i class="close"></i></div></div><pre>{{body}}</pre></div>

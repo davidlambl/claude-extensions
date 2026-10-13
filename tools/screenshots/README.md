@@ -9,7 +9,7 @@ How it works:
 3. `render.mjs` replays the recording through [xterm.js](https://xtermjs.org), the terminal VS Code uses, and writes each marked screen as a terminal window. A shot starts at the first prompt, past the startup banner, and long empty stretches are squeezed to two rows; nothing drawn is changed.
 4. Headless Chrome captures each window as `<name>-<mark>.png`.
 
-The window frame is the api-call skill's `frame.html` (`skills/api-call/skills/api-call/scripts/`), read from there so that an installed copy of the skill carries it; that skill draws its own screenshots in the same frame.
+The window frame is the api-call skill's `frame.html` (`skills/api-call/skills/api-call/scripts/`), read from there so that an installed copy of the skill carries it; that skill draws its own screenshots in the same frame. The frame looks like the system the session runs on: macOS, Windows or Linux.
 
 ## Use it
 
