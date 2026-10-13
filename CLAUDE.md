@@ -23,3 +23,19 @@ Rules this build enforces that are easy to trip on:
 - Under `claude plugin test` nothing sits beneath the plugin: stub every event it passes on with `next(e)` and every `$` call it makes. `mock.store` and `mock.clock` cover the store and timers; the test's own `$` has no `store`.
 - A `Button` never goes inside a `Text` (a Text holds only strings and inline text); put it in a `Box` row beside the `Text` around it.
 - A hook that acts after `next(e)` on a gating event (`session.compact`) gets `.catch(($, e, next) => next(e))`, which replays the result instead of running the event twice.
+
+## Skills
+
+- A skill plugin's scripts are tested with Python's unittest in the plugin's `tests/` folder; network tests skip unless `API_CALL_E2E` is set, which CI sets. Raise the plugin's `version` with every published change, as for a mod, and add a CHANGELOG entry.
+- Every fix comes with a test that fails without it: run the new test against the unfixed file before you trust it. A test must isolate the path it guards. The 0.2.2 echo test for templated folder headers passed only because folder auth registered the same variable, so the header path shipped broken.
+- Test secrets are obviously fake, such as `FAKE-tok-7f3a9c2e`. A vendor-shaped value, even the example key from a vendor's own docs, gets the push blocked by GitHub's secret scanning.
+- Write a `\uXXXX` escape in a source or test file with a Python edit, not the Edit or Write tool, which turns it into the raw character. Before committing, scan changed files for raw Cf, Zl and Zp characters.
+
+Secrets in api-call and ado-evidence, which SECURITY.md promises to users:
+
+- A secret is a value in a credential position: an API key's value, a bearer token, a basic-auth password and token, a templated header value (except standard headers such as `Accept` or `Content-Type`), a password in the base URL, and a URL user with no password. Hosts, paths, header names, prefixes, usernames and labels are configuration: shown, never refused. Don't widen this without first hunting for false refusals in ordinary steps. A broader rule once made templated hosts and `/me` responses refuse every call.
+- A fix to one api-call source goes in the other, and a credential fix goes in `post.py` too. Two of the four leaks the 2026-10-09 review found were a fix applied in one place and not its sibling.
+- Never send a credential through a client that follows redirects. Python's default opener resends every header, `Authorization` included, to wherever a redirect points, and .NET resends a key header such as `X-Api-Key`. Record a redirect as the response.
+- The image draws the body exactly as the API returned it. Decoding escapes or re-serializing JSON before drawing showed a secret the source's check had never seen.
+- In PowerShell, a list passed through `$( )` or `@( )` reaches the function as a copy, so whatever the function adds to it is lost. Pass the variable itself, or return values instead.
+- Verifying a change to either skill means hunting both directions: secrets that get through, and ordinary steps that get refused.
