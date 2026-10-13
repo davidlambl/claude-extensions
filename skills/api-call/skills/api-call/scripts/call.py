@@ -104,8 +104,13 @@ def last_line(text):
 def call():
     # NO_COLOR keeps a source's error text plain. PYTHONIOENCODING has a Python source write the UTF-8 read here, where
     # Windows would give a pipe its ANSI code page.
-    proc = subprocess.run(source_argv(), capture_output=True, text=True, encoding="utf-8", timeout=args.timeout + 120,
-                          env={**os.environ, "NO_COLOR": "1", "PYTHONIOENCODING": "utf-8"})
+    limit = args.timeout + 120
+    try:
+        proc = subprocess.run(source_argv(), capture_output=True, text=True, encoding="utf-8", timeout=limit,
+                              env={**os.environ, "NO_COLOR": "1", "PYTHONIOENCODING": "utf-8"})
+    except subprocess.TimeoutExpired:
+        # What the source printed before it was stopped is not shown: it has not been through the source's own check.
+        sys.exit(f"the {args.via} source did not finish within {limit} seconds and was stopped; nothing was recorded")
     if proc.returncode != 0:
         sys.exit(f"the {args.via} source failed:\n{(proc.stderr or proc.stdout).strip()[-1500:]}")
     line = last_line(proc.stdout)

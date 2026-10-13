@@ -273,5 +273,24 @@ class CallPyOverTheNetwork(unittest.TestCase):
             self.assertEqual(json.loads(record["body"])["args"]["note"], "line\u2028two")
 
 
+
+class SourceTimeout(unittest.TestCase):
+    """A source that does not finish is stopped and reported in one line, never with a traceback or its partial output."""
+
+    def test_a_source_that_hangs_is_reported_without_a_traceback(self):
+        import runpy
+        from unittest import mock
+        script = Path(__file__).resolve().parents[1] / "skills" / "api-call" / "scripts" / "call.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            argv = [str(script), "--via", "postman", "--env", "e.json", "--collection", "c.json", "--out", tmp,
+                    "--name", "step", "--timeout", "5", "GET", "/x"]
+            hang = subprocess.TimeoutExpired(cmd="source", timeout=125, output="partial FAKE-secret-123456")
+            with mock.patch.object(sys, "argv", argv), mock.patch("subprocess.run", side_effect=hang):
+                with self.assertRaises(SystemExit) as stop:
+                    runpy.run_path(str(script), run_name="__main__")
+        message = str(stop.exception.code)
+        self.assertIn("did not finish within 125 seconds", message)
+        self.assertNotIn("FAKE-secret", message)
+
 if __name__ == "__main__":
     unittest.main()

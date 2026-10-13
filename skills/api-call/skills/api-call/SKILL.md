@@ -22,6 +22,7 @@ python3 <base>/scripts/call.py --via insomnia --env "API - Test" --collection "A
 
 - `--via postman` takes the export files instead: `--env "<dir>/API - Test.postman_environment.json" --collection "<dir>/API.postman_collection.json"`. Secrets kept out of the export go in a `--vars` file, where every value is a secret wherever it is used; a client certificate is `--cert` and `--key`, in PEM.
 - An API key or bearer token that resolves to an empty value stops the call before anything is sent. From Postman it usually means the `--vars` file is missing; from Insomnia, an empty variable or a sub-environment not chosen.
+- When the base URL holds an `@`, a failed call says only `the base URL holds credentials that could not be parsed or reached`, to quote none of it. Ask the user to check that its user and password are percent-encoded, and that the host is up.
 - `--expect` is the status the step should return. A mismatch exits 3; the record and the image are still written. Report a mismatch as a finding; never retake until it passes. A redirect is recorded as its 3xx, never followed.
 - `--warm` sends once untimed first, so a cold start after a deploy does not show in the timing.
 - `--label` leads the image's title, such as `"After: Test (this change)"`. For a before-and-after pair, run the step twice, once per environment, with a label for each.
@@ -32,7 +33,7 @@ python3 <base>/scripts/call.py --via insomnia --env "API - Test" --collection "A
 
 `<dir>/<name>.json` is the record: the source, environment and collection, the method and path, the URL and request headers as sent with every credential as `********`, the client certificate's file name, the status, how long it took, when it was sent, the response headers and the body. With `--shot`, `<dir>/<name>.png` draws the same, and the `.html` it was captured from sits beside it. The script prints one line of JSON with the status, the verdict and the file paths.
 
-A credential is an API key's value, a bearer token, a basic-auth password, a templated header value, or a password in the base URL, with every value substituted into it. A user that goes with no password, as in `https://TOKEN@host`, is one too. Hosts, paths, header names, key names and usernames beside a password are configuration, shown as resolved. So a key written into the base URL's path or query shows in the record and the image. A key belongs in the auth, as an API key in a query parameter. If a collection keeps one in the base URL, tell the user so.
+A credential is an API key's value, a bearer token, a basic-auth password, a templated header value other than a standard one such as `Accept` or `Content-Type`, or a password in the base URL, with every value substituted into it. A user that goes with no password, as in `https://TOKEN@host`, is one too. Hosts, paths, header names, key names and usernames beside a password are configuration, shown as resolved. So a key written into the base URL's path or query shows in the record and the image. A key belongs in the auth, as an API key in a query parameter. If a collection keeps one in the base URL, tell the user so.
 
 The record is written before the screenshot is taken. If the screenshot fails, `<name>.json` is still written, without `png`, and the script exits 1 with a message naming the record and the status.
 

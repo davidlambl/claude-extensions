@@ -49,10 +49,11 @@ Secret fixes. Earlier versions said a source never prints, writes or draws a sec
 
 In both sources:
 
-- A user and password in the base URL go as basic auth, as the Insomnia and Postman apps send them, unless the auth sets `Authorization`. The record's auth reads `basic auth from the base URL as <user>`.
+- A user and password in the base URL go as basic auth, as the Insomnia and Postman apps send them, unless the auth sets `Authorization`. The record's auth reads `basic auth from the base URL as <user>`, or `basic auth from the base URL, with an empty user` for `https://:password@host`.
 - An API key or bearer token that resolves to an empty value stops the call before anything is sent. A step meant to send a blank key for a 401 needs a folder set to No Auth instead.
 - A template nests at most five levels deep, and a value resolves to at most 65536 characters. A cycle, or a value past either limit, stops the call before anything is sent.
 - An error never names a variable found inside another variable's value, which may be a secret. It names the variable that holds it.
+- An unencoded `/`, `?` or `#` in the base URL's user or password ends its userinfo early, so no secret is found there, and an error could quote part of it as the host. When the base URL holds an `@` after its scheme, a failed request now prints `the request failed: the base URL holds credentials that could not be parsed or reached; percent-encode any / ? # or @ in its user or password`. It quotes no part of the URL or its host.
 
 In the Insomnia source:
 
@@ -67,16 +68,22 @@ In the Insomnia source:
 - ISO dates and booleans in Insomnia's data are sent as written.
 - `Content-Type` is no longer listed as sent on a GET, which carries no content. A header name .NET rejects is refused rather than dropped.
 - The environment, collection and folder names are labels, and no longer a reason to refuse a record.
+- A secret that also sits in the base URL, the typed path or the auth's text shows as `********` in the record's `url`, `path` and `auth`, instead of refusing every call. A tenant id sent in a templated header and named in the URL is one. A response that echoes it is still refused.
+- A templated value of a standard header that never carries a credential is shown as resolved and is not a secret. These are `Accept`, `Accept-Charset`, `Accept-Encoding`, `Accept-Language`, `Cache-Control`, `Connection`, `Content-Language`, `Content-Length`, `Content-Type`, `Host`, `Origin`, `Pragma`, `Referer`, `User-Agent`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto` and `X-Requested-With`, in any letter case. Every other templated header value is still a secret.
 
 In the Postman source:
 
 - Collection exports in schema v2.0 are read as well as v2.1, and another schema is refused by name.
 - A folder named with `--folder` that has no auth of its own takes the collection's, as in Postman.
 - A basic password typed blank beside a username is sent, for an API that takes the key as the user, as `curl -u key:` does. That user is then the credential, shown as `********`. A templated password that resolves to an empty value stops the call, since it usually means a `--vars` file is missing.
+- Basic auth with an empty user reads `basic auth, with an empty user`.
 - A `--vars` value, or an environment value typed secret, in the base URL or in a key's name shows there as `********`, where the record used to be refused.
+- Every value substituted into a base URL user with no password is a secret at every depth, as for a password. Each is found by where it was substituted, as the Insomnia source finds it.
+- The record's own fields and its labels are left out of the refusal check, as in the Insomnia source. The fields are `source`, `method`, `sent` and `sent_utc`, and the labels are the environment, collection and folder names. So a `--vars` value equal to today's date no longer refuses every call.
 - When the base URL variable is not defined, the one variable whose name matches it ignoring case is used, such as `baseURL`. With two or more, the message names them.
 - A path with a space or a character outside ASCII is sent percent-encoded, as Postman sends it.
-- An export saved with a byte order mark is read, and a byte order mark before a JSON body is dropped, so the body is still laid out as JSON.
+- An export saved with a byte order mark is read.
+- A body is read as the Insomnia source reads it: by its byte order mark, then by a declared charset Python knows, then as UTF-8. The byte order mark is dropped, so a JSON body after one is still laid out as JSON.
 - Output is UTF-8 on Windows.
 
 In `call.py` and `render.py`:
@@ -84,12 +91,14 @@ In `call.py` and `render.py`:
 - `call.py` writes the record before the screenshot, so a failed capture keeps it. The script exits 1 with a message naming the record.
 - `call.py` writes the record as ASCII-escaped JSON, so no invisible or bidi character a response carried can hide in the file.
 - `call.py` reads the source's record whatever line or paragraph separators the body holds.
+- `call.py` reports a source that does not finish in one line, with no traceback and none of the source's partial output.
 - `call.py` stops on a path Git Bash has rewritten into a Windows path, where setting `MSYS_NO_PATHCONV` inside `call.py` had no effect. It reads a doubled leading slash as one.
 - `render.py` takes a relative record or `--out` path.
 - `render.py` finds Edge on macOS and Linux.
 - `render.py` measures lines in display cells, so CJK, emoji and tab-indented lines end in `...` instead of being cut at the window's edge. A row the font draws wider than counted ends in an ellipsis at the edge, and so does a long title, instead of running under the window's buttons.
 - Every row and the title are drawn left to right in the order their characters are written, so right-to-left text cannot reorder the digits and punctuation around it.
 - Each row is clipped to its own height, so stacked combining marks cannot paint over another row.
+- `render.py` draws U+FFFC, the object replacement character, as its escape. Many fonts draw it as a space, so it joins the non-ASCII spaces and the blank Braille pattern U+2800, which are escaped too.
 - A `{{title}}` or `{{body}}` written in a label, a name or a body is drawn as text.
 - A text body loses only the empty lines at its start and end. Every other character is drawn, its indentation and trailing spaces included, with control characters and separators as escapes. A body of line breaks alone is drawn as their escapes, and only a body of zero length as `(empty body)`.
 - A body holding a lone surrogate escape, or JSON nested too deep for Python to parse, is drawn, where `--shot` used to fail.
