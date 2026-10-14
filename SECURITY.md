@@ -41,7 +41,7 @@ These are the properties a bug report should test against:
 - Everything ado-evidence prints has the token masked before any of it is cut short, in every form listed above for api-call.
 - ado-evidence names an image by its file name alone, with no folder, drive or colon, and looks it up in the images folder, so a comment cannot reach a file elsewhere, on Windows as on macOS and Linux.
 - Neither skill writes to Insomnia's data or Postman's exports.
-- `crop.py`'s output holds only rows and columns of its input, in their order. A row or column is dropped only when it is identical to the one before it and more than `--gap` of them run together; nothing is blended, drawn or moved, and `--grid`'s ruled copy is for reading coordinates, never evidence. It never writes over its input, and replaces a file `--out` names only with `--overwrite`. A PNG's dimensions are checked before anything is allocated for it, 40 megapixels and 256 MB of filtered pixel data at most, no more than that and a byte is read from the file, its compressed data inflates to no more than its header declares, and a bad CRC on a critical chunk or a file cut short is refused.
+- `crop.py`'s output holds only rows and columns of its input, in their order. A row or column is dropped only when it is identical, at 8 bits a sample, to the one before it and more than `--gap` of them run together; nothing is blended, drawn or moved, and `--grid`'s ruled copy is for reading coordinates, never evidence. It never writes over its input, and replaces a file `--out` names only with `--overwrite`. A PNG's dimensions are checked before anything is allocated for it: 40 megapixels, 65535 pixels a side and 256 MB of filtered pixel data at most, and no more than that and a byte is read from the file. A chunk past the ones an image needs is not kept, and a file of more than a million chunks is refused. Its compressed data inflates to no more than its header declares, and a bad CRC on a critical chunk or a file cut short is refused.
 
 ## Known limits, by design
 
@@ -62,5 +62,5 @@ These are not bugs. They are the edges of the guarantees above.
 - **Postman's `--timeout` bounds each socket read, not the whole response.** A server that sends slowly can keep a call open past it.
 - **Posting acts as you.** Preview with `--dry-run` and approve the text before it goes up.
 - **A squeeze shrinks a uniform area whose size carries meaning**, a bar in a chart or a progress bar, exactly as it shrinks blank space. The skill does not squeeze those, and says in the caption when blank space was closed up.
-- **`crop.py` keeps a 16-bit sample's high byte**, and drops text, time and EXIF chunks; the colour chunks are carried over.
+- **`crop.py` keeps a 16-bit sample's high byte**, so two 16-bit rows that differ only in their low bytes are identical to the squeeze; and it drops text, time and EXIF chunks, while the colour chunks are carried over.
 - **An eval or screenshot run calls real endpoints and real models** with your credentials.

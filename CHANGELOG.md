@@ -163,7 +163,7 @@ Split out of api-shots, so that where the records and images go is the user's ch
 ### 0.1.7 — 2026-10-13
 
 - `crop.py` cuts a PNG screenshot down before it is posted, with the standard library alone. `--squeeze` closes up every run of identical rows, then of identical columns, longer than `--gap` (16 pixels) to the gap, so a full-screen window comes down to its content with every row and column that differs from its neighbour kept; `--box LEFT,TOP,RIGHT,BOTTOM` keeps one region; `--grid` writes a copy ruled every 100 pixels, to read a box from. It writes beside the input or at `--out`, never over the input, and replaces a file `--out` names only with `--overwrite`. It prints one line of JSON with the sizes, the box as used and what was squeezed.
-- It reads any PNG that is not interlaced, at every depth and colour type, and writes 8-bit RGB or RGBA with the source's colour chunks carried over. A JPEG, an interlaced PNG, a damaged file, or one past 40 megapixels or 256 MB of pixel data, is refused with one line, and a crafted file costs no more memory than its header declares.
+- It reads any PNG that is not interlaced, at every depth and colour type, and writes 8-bit RGB or RGBA with the source's colour chunks carried over. A JPEG, an interlaced PNG, a damaged file, or one past 40 megapixels, 65535 pixels a side or 256 MB of pixel data, is refused with one line, and a crafted file cannot take it past those bounds.
 - SKILL.md says when to cut an image down: squeeze first, box with the grid after, never squeeze a chart or anything whose size carries its meaning, say in the caption when blank space was closed up, and post the image as given when `crop.py` refuses it, never cropping another way.
 
 ### 0.1.6 — 2026-10-13

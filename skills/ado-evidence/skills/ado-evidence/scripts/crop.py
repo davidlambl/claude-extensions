@@ -31,6 +31,9 @@ COLOUR = (b"sRGB", b"gAMA", b"cHRM", b"pHYs")  # carried over from any source
 PROFILE = b"iCCP"  # carried over from an RGB, palette or RGBA source; a gray source's profile is a gray one
 LIMIT = 256 * 1024 * 1024  # bytes: the most a file, or its filtered pixel data, may be
 PIXELS = 40_000_000  # the most pixels an image may hold: decoded, each takes four bytes, whatever the file packed them in
+SIDE = 65535  # the most pixels a side may be: each row and each column costs memory of its own
+CHUNKS = 1 << 20  # the most chunks a file may hold: an image needs a handful, and each costs time to pass over
+WANTED = (b"IHDR", b"PLTE", b"tRNS", b"sRGB", b"gAMA", b"cHRM", b"pHYs", b"iCCP")  # the chunks kept, the first of each
 GAP, STEP = 16, 100  # pixels: what a squeezed run keeps, and how often the grid is ruled
 
 Header = namedtuple("Header", "width height depth color channels bpp stride")
@@ -56,11 +59,13 @@ def kind_of(data):
 
 
 def chunks(data, name="the file"):
-    """The (kind, body) chunks of a PNG up to IEND. A length past the end of the file is a file cut short. A critical
-    chunk whose CRC fails refuses the file, as libpng does; an ancillary one whose CRC fails is dropped."""
+    """A PNG's chunks up to IEND, as (parts, idat): the first chunk of each kind in WANTED by its kind, in the order
+    met, and the IDAT data joined. Nothing else is kept, so a file padded with chunks costs no memory, and one of more
+    than CHUNKS chunks is refused. A length past the end of the file is a file cut short. A critical chunk whose CRC
+    fails refuses the file, as libpng does; an ancillary one whose CRC fails is dropped."""
     if not data.startswith(SIGNATURE):
         raise Problem(f"not a PNG: {name} is {kind_of(data)}; save the screenshot as PNG")
-    out, pos = [], len(SIGNATURE)
+    parts, idat, pos, count = {}, bytearray(), len(SIGNATURE), 0
     while True:
         if pos + 8 > len(data):
             raise Problem("the PNG is cut short: it ends before its IEND chunk")
@@ -73,11 +78,18 @@ def chunks(data, name="the file"):
         intact = zlib.crc32(kind + body) == int.from_bytes(data[pos + 8 + n:pos + 12 + n], "big")
         if kind in CRITICAL and not intact:
             raise Problem(f"the PNG's {label} chunk fails its CRC check: the file is damaged")
-        if intact:
-            out.append((kind, body))
+        count += 1
+        if count > CHUNKS:
+            raise Problem(f"the PNG holds more than {CHUNKS} chunks, which no image needs")
+        if not parts and kind != b"IHDR":
+            raise Problem("the PNG does not begin with its IHDR chunk")
+        if kind == b"IDAT":
+            idat += body
+        elif intact and kind in WANTED and kind not in parts:
+            parts[kind] = body
         pos += 12 + n
         if kind == b"IEND":
-            return out
+            return parts, bytes(idat)
 
 
 def header(body):
@@ -96,6 +108,8 @@ def header(body):
         raise Problem("an interlaced PNG, which this does not read; save it again without interlacing")
     if not width or not height:
         raise Problem("a PNG with no pixels")
+    if width > SIDE or height > SIDE:
+        raise Problem(f"a PNG of {width} x {height} is larger than this reads: no side may be more than {SIDE} pixels")
     if width * height > PIXELS:
         raise Problem(f"a PNG of {width} x {height} is larger than this reads: {width * height // 1_000_000} megapixels, "
                       f"where the limit is {PIXELS // 1_000_000}")
@@ -107,11 +121,11 @@ def header(body):
     return Header(width, height, depth, color, channels, max(1, channels * depth // 8), stride)
 
 
-def inflate(idats, expected):
+def inflate(idat, expected):
     """The filtered scanlines, exactly expected bytes: the IDAT data decompressed with no more than that read out, so
     a crafted stream costs no more memory than the header declared."""
     try:
-        raw = zlib.decompressobj().decompress(b"".join(idats), expected + 1)
+        raw = zlib.decompressobj().decompress(idat, expected + 1)
     except zlib.error as e:
         raise Problem(f"the PNG's pixel data does not decompress: {e}") from None
     if len(raw) > expected:
@@ -278,24 +292,22 @@ def load(path):
     if len(data) > LIMIT:
         raise Problem(f"{path.name} is larger than {LIMIT >> 20} MB, which is more than this reads")
     parts = chunks(data, path.name)
-    if parts[0][0] != b"IHDR":
-        raise Problem("the PNG does not begin with its IHDR chunk")
-    return header(parts[0][1]), parts
+    return header(parts[0][b"IHDR"]), parts
 
 
 def decode(h, parts, rows_needed=None, cols_needed=None):
     """The image the chunks hold as RGBA rows: its first rows_needed rows and cols_needed columns, or all of it, with
     the colour chunks to carry over to a copy."""
-    palette = next((body for kind, body in parts if kind == b"PLTE"), None)
-    trns = next((body for kind, body in parts if kind == b"tRNS"), None)
-    if h.color == 3 and (palette is None or not palette):
+    found, idat = parts
+    palette, trns = found.get(b"PLTE"), found.get(b"tRNS")
+    if h.color == 3 and not palette:
         raise Problem("the PNG has a palette colour type and no palette")
     if palette is not None and (len(palette) % 3 or len(palette) > 768):
         raise Problem("the PNG's palette is malformed")
-    raw = inflate([body for kind, body in parts if kind == b"IDAT"], (h.stride + 1) * h.height)
+    raw = inflate(idat, (h.stride + 1) * h.height)
     pixels = h.width if cols_needed is None else max(0, min(cols_needed, h.width))
     rows = [rgba(line, h, palette, trns, pixels) for line in unfilter(raw, h, rows_needed, cols_needed)]
-    extras = [(kind, body) for kind, body in parts if kind in COLOUR or (kind == PROFILE and h.color in (2, 3, 6))]
+    extras = [(kind, body) for kind, body in found.items() if kind in COLOUR or (kind == PROFILE and h.color in (2, 3, 6))]
     return Image(pixels, len(rows), rows, extras)
 
 
@@ -375,10 +387,13 @@ DIGITS = {"0": ("111", "101", "101", "101", "111"), "1": ("010", "110", "010", "
           "8": ("111", "101", "111", "101", "111"), "9": ("111", "101", "111", "001", "111")}
 
 
-def scale_for(width, step=STEP):
+def scale_for(width, height=None, step=STEP):
     """The pixels a unit of the grid's digits takes: more on a wider image, which is looked at scaled down, but never
-    so many that the widest label along the top edge, a unit right of its rule, reaches the next rule."""
-    units = len(str((max(width - 1, step) // step) * step)) * 4 + 1  # the widest label: three units a digit, one between, one each side
+    so many that the widest label, a unit from its rule, reaches the next rule: along the top edge, where the labels
+    sit a step apart, or along the left edge, where a tall image's labels have a digit more."""
+    def digits(length):
+        return len(str((max(length - 1, step) // step) * step))  # the last rule's label
+    units = max(digits(width), digits(height or 0)) * 4 + 1  # three units a digit, one between, one each side
     return max(2, min(width // 500, step // (units + 1)))
 
 
@@ -414,7 +429,7 @@ def grid(image, step=STEP):
     """A copy ruled every step pixels with dashes of black and white, visible on any background, each rule labelled
     with its coordinate along the top edge or the left edge in digits scaled to the image: a copy to read a box's
     edges from, never evidence."""
-    scale = scale_for(image.width)
+    scale = scale_for(image.width, image.height)
     dash = 4 * scale
     rows = [bytearray(row) for row in image.rows]
     for x in range(step, image.width, step):
@@ -478,6 +493,10 @@ def write(path, data):
         raise Problem(f"cannot write {path}: {e.strerror or e}") from None
     finally:
         if tmp and os.path.exists(tmp):
+            try:
+                os.chmod(tmp, 0o600)  # the mode copied may be read-only, which Windows will not delete
+            except OSError:
+                pass
             os.unlink(tmp)
 
 
