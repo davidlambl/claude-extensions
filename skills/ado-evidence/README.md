@@ -28,6 +28,8 @@ Install it from a Claude Code prompt in a terminal:
 
 Answer `y` to add the marketplace, then choose a scope.
 
+In auto mode, Claude Code's classifier can stop these scripts with `[Code from External]`. [Auto mode](../../README.md#auto-mode) in the repository's README says why, and how to let them run.
+
 Requirements: Python 3, and the Azure CLI signed in (`az login`), or `AZURE_DEVOPS_TOKEN` holding either a Microsoft Entra access token or a personal access token. `post.py` tells them apart by shape: an Entra token is a JWT and goes as Bearer, and anything else goes as Basic with an empty user name. `post.py` verifies Azure DevOps's certificate. On macOS, python.org's Python has no root certificates until its `Install Certificates.command` has run; there `post.py` uses certifi's instead, once `pip install certifi` has installed it.
 
 ```sh
