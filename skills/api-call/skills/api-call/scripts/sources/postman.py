@@ -9,6 +9,8 @@ Reads Postman's exports, read-only:
   - the collection export (schema v2.1 or v2.0), for its variables and the auth on the collection or on a top-level
     folder (API key, bearer or basic); a folder named with --folder that has no auth of its own inherits the
     collection's, as in Postman
+--folder is matched exactly, in its own letter case. When no folder has the name, the error names those that differ
+from it only in letter case, or else those close to it, three at most, and never chooses one.
 --vars lays a flat {"name": "value"} file over the environment, for secrets kept out of the export; every value in
 it is a secret. A client certificate is PEM: --cert and --key, with API_CALL_KEY_PASSPHRASE unlocking the key.
 Only {{name}} templates are resolved, in a value that holds templates of its own too; names are case-sensitive, as
@@ -41,7 +43,8 @@ variable is not defined, the one variable whose name matches it ignoring case is
 collection written for baseURL). A limit: a key outside ASCII is sent as its Latin-1 bytes, and an echo of those bytes
 percent-encoded (%E4 for ä) is not looked for, so keep keys ASCII.
 """
-import argparse, base64, email.message, html, json, os, re, ssl, sys, time, urllib.error, urllib.parse, urllib.request
+import argparse, base64, email.message, html, json, os, re, ssl, sys, time, unicodedata, urllib.error, urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -71,6 +74,15 @@ BOMS = ((b"\xef\xbb\xbf", "utf-8"), (b"\xff\xfe\x00\x00", "utf-32-le"), (b"\xff\
         (b"\xfe\xff", "utf-16-be"), (b"\x00\x00\xfe\xff", "utf-32-be"))
 UNREACHED = ("the request failed: the base URL holds credentials that could not be parsed or reached; "
              "percent-encode any / ? # or @ in its user or password")
+# A name in a message shows at most NAME_WIDTH characters between its quotes (see shown_name), and a message lists at
+# most NAMES_LISTED names. Close names are looked for among NAMES_COMPARED names at most, each LONGEST_COMPARED
+# characters at most (see name_hint), so a shared export can make neither the message long nor the search slow.
+NAME_WIDTH, NAMES_LISTED, NAMES_COMPARED, LONGEST_COMPARED = 80, 3, 1000, 128
+# The code points a name shows as escapes besides its control, format, separator, surrogate and unassigned ones, as
+# render.py draws a body: the other default-ignorable ones, which draw nothing, and the blank Braille pattern and the
+# object replacement character, which draw as a space.
+UNSEEN = ((0x034F, 0x034F), (0x115F, 0x1160), (0x17B4, 0x17B5), (0x180B, 0x180F), (0x2800, 0x2800), (0x3164, 0x3164),
+          (0xFE00, 0xFE0F), (0xFFA0, 0xFFA0), (0xFFFC, 0xFFFC), (0xE0100, 0xE01EF))
 
 
 class Problem(Exception):
@@ -272,14 +284,106 @@ def has_auth(item):
     return bool(item.get("auth")) and (item["auth"].get("type") or "noauth") != "noauth"
 
 
+def shown_name(name):
+    """name as a message shows it: in single quotes, a ' or a \\ in it escaped with a \\, and each character that
+    draws nothing, draws as a space it is not, or could reorder or break the line as its \\uXXXX escape (\\U and eight
+    hex digits past the Basic Multilingual Plane): a control or format character, the bidi marks among them, a line or
+    paragraph separator, a space other than U+0020, a lone surrogate, an unassigned code point, and those in UNSEEN. A
+    name that would show more than NAME_WIDTH characters is cut before the first that does not fit, and ... follows
+    its closing quote. Names come from a shared export, so none can break the message's line, fake its quoting or make
+    it long. As the Insomnia source's Format-Name."""
+    out, width = [], 0
+    for ch in name:
+        cp = ord(ch)
+        if ch in "'\\":
+            piece = "\\" + ch
+        elif not " " <= ch <= "~" and (unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp", "Zs", "Cs", "Cn")
+                                       or any(lo <= cp <= hi for lo, hi in UNSEEN)):
+            piece = "\\" + (f"u{cp:04x}" if cp <= 0xFFFF else f"U{cp:08x}")
+        else:
+            piece = ch
+        if width + len(piece) > NAME_WIDTH:
+            return "'" + "".join(out) + "'..."
+        out.append(piece)
+        width += len(piece)
+    return "'" + "".join(out) + "'"
+
+
+def listed(names):
+    """Names as a message lists them, each as shown_name shows it: 'A', 'A' and 'B', or 'A', 'B' and 'C'; past
+    NAMES_LISTED, the first of them and how many more."""
+    shown = [shown_name(n) for n in names[:NAMES_LISTED]]
+    if len(names) > NAMES_LISTED:
+        return ", ".join(shown) + f" and {len(names) - NAMES_LISTED} more"
+    return shown[0] if len(shown) == 1 else ", ".join(shown[:-1]) + " and " + shown[-1]
+
+
+def close_edits(a, b):
+    """How many edits apart names of lengths a and b may be and still count as close: one for every five characters
+    of the longer, one at least and three at most; none when the longer is under three characters."""
+    longer = max(a, b)
+    return 0 if longer < 3 else min(3, max(1, longer // 5))
+
+
+def edits(a, b, most):
+    """How many single-character edits turn a into b (an insertion, a deletion, a substitution, or a swap of two
+    neighbours), or most + 1 when that is more than most. Only the cells within most of the diagonal are worked out,
+    and the work stops once two rows running are past most, since no way to the end can skip both. As the Insomnia
+    source's Get-Edits."""
+    n, m, past = len(a), len(b), most + 1
+    if abs(n - m) > most:
+        return past
+    before, row = None, [min(j, past) for j in range(m + 1)]
+    for i in range(1, n + 1):
+        new = [past] * (m + 1)
+        new[0] = min(i, past)
+        for j in range(max(1, i - most), min(m, i + most) + 1):
+            d = min(row[j - 1] + (a[i - 1] != b[j - 1]), row[j] + 1, new[j - 1] + 1)
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                d = min(d, before[j - 2] + 1)
+            new[j] = min(d, past)
+        if min(new) > most and min(row) > most:
+            return past
+        before, row = row, new
+    return row[m]
+
+
+def name_hint(wanted, names):
+    """What the message for a name that matched none exactly adds about those that came near it, or "": the names that
+    differ from it in letter case only, compared by case folding, which is ordinal and the same in every culture; or
+    else those within a few edits of it (see close_edits), closest first. It lists NAMES_LISTED at most and counts the
+    rest (see listed). Each is shown, never chosen: a name in another letter case may be another environment, such as
+    production. Names only, never a value. Close names are not looked for among more than NAMES_COMPARED names, nor
+    past LONGEST_COMPARED characters. As the Insomnia source's Get-NameHint."""
+    folded = wanted.casefold()
+    names = sorted({"" if n is None else str(n) for n in names} - {wanted})
+    cased = [n for n in names if n.casefold() == folded]
+    if cased:
+        return f"; names are case-sensitive, and {listed(cased)} {'differs' if len(cased) == 1 else 'differ'} only in letter case"
+    if len(names) > NAMES_COMPARED or len(folded) > LONGEST_COMPARED:
+        return ""
+    close = []
+    for n in names:
+        f = n.casefold()
+        most = close_edits(len(folded), len(f))
+        if most and len(f) <= LONGEST_COMPARED:
+            d = edits(folded, f, most)
+            if d <= most:
+                close.append((d, n))
+    if not close:
+        return ""
+    return f"; the closest {'name is' if len(close) == 1 else 'names are'} {listed([n for _, n in sorted(close)])}"
+
+
 def pick_folder(collection, name):
-    """The top-level folder whose auth applies: the one named; else none when the collection has its own auth;
-    else the only folder with auth."""
+    """The top-level folder whose auth applies: the one named, exactly; else none when the collection has its own auth;
+    else the only folder with auth. When no folder has the name, the message names those that came near it."""
     folders = [i for i in collection.get("item") or [] if isinstance(i, dict) and "item" in i]
     if name:
         match = [f for f in folders if f.get("name") == name]
         if len(match) != 1:
-            raise Problem(f"expected one top-level folder '{name}', found {len(match)}")
+            hint = "" if match else name_hint(name, [f.get("name") for f in folders])
+            raise Problem(f"expected one top-level folder {shown_name(name)}, found {len(match)}{hint}")
         return match[0]
     if has_auth(collection):
         return None

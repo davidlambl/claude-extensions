@@ -20,6 +20,8 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "skills" / "api-call" / "scripts
 SOURCE = SCRIPTS / "sources" / "insomnia.ps1"
 sys.path.insert(0, str(SCRIPTS))
 import render  # noqa: E402
+sys.path.insert(0, str(SCRIPTS / "sources"))
+import postman  # noqa: E402
 
 PWSH = shutil.which("pwsh") or next((p for p in ("/opt/homebrew/bin/pwsh", "/usr/local/bin/pwsh", "/usr/bin/pwsh")
                                      if os.path.exists(p)), None)
@@ -56,8 +58,15 @@ def echo_body(body):
     return "/base64/" + base64.urlsafe_b64encode(body).decode("ascii")
 
 
-def write_data(root, base, folders=(), subs=None, certs=(), collection="Coll"):
-    """Insomnia's data folder: global environment 'Env' (base data, sub-environments), collection 'Coll'."""
+def esc(ch):
+    """ch as a message shows it in a name: a backslash, then u and four hex digits, or U and eight past the BMP."""
+    cp = ord(ch)
+    return "\\" + (f"u{cp:04x}" if cp <= 0xFFFF else f"U{cp:08x}")
+
+
+def write_data(root, base, folders=(), subs=None, certs=(), collection="Coll", environment="Env", workspaces=()):
+    """Insomnia's data folder: global environment 'Env' (base data, sub-environments), collection 'Coll', and any more
+    workspaces, each a (scope, name) pair with nothing in it."""
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
 
@@ -66,8 +75,10 @@ def write_data(root, base, folders=(), subs=None, certs=(), collection="Coll"):
         (root / name).write_text(text, encoding="utf-8")
 
     db("insomnia.Workspace.db", [
-        {"_id": "wrk_env", "type": "Workspace", "parentId": "proj", "name": "Env", "scope": "environment"},
-        {"_id": "wrk_col", "type": "Workspace", "parentId": "proj", "name": collection, "scope": "collection"}])
+        {"_id": "wrk_env", "type": "Workspace", "parentId": "proj", "name": environment, "scope": "environment"},
+        {"_id": "wrk_col", "type": "Workspace", "parentId": "proj", "name": collection, "scope": "collection"}] +
+       [{"_id": f"wrk_more{i}", "type": "Workspace", "parentId": "proj", "name": n, "scope": s}
+        for i, (s, n) in enumerate(workspaces)])
     db("insomnia.Environment.db",
        [{"_id": "env_base", "type": "Environment", "parentId": "wrk_env", "name": "Base Environment", "data": base}] +
        [{"_id": f"env_sub{i}", "type": "Environment", "parentId": "env_base", "name": n, "data": d}
@@ -1093,6 +1104,161 @@ class DataFolder(Case):
         self.assertIn("holds no insomnia.Workspace.db", r.stderr)
         r = self.call("/x")  # the test's own data folder still works
         self.assertNotIn("insomnia.Workspace.db", r.stderr)
+
+
+NBSP, ZWSP, RLO, CR, LF, TAB = chr(0xA0), chr(0x200B), chr(0x202E), chr(13), chr(10), chr(9)
+
+
+class NearNames(Case):
+    """Issue 5: a global environment, a sub-environment, a collection or a top-level folder is chosen by its exact
+    name, compared ordinal, so that letter case and every unseen character count. When none has the name, the message
+    names those that differ from it only in letter case, or else the closest few, and never chooses one: a work item's
+    'Test V2' may mean Insomnia's 'Test v2', or another environment."""
+
+    def test_a_name_in_another_letter_case_is_named_and_never_chosen(self):
+        # Before, a lookup ignored letter case, so each of these chose the one Insomnia has.
+        self.data({"baseUrl": OFFLINE, "token": "FAKE-tok-7f3a9c2e"}, [folder("Partner API")], subs={"Staging v2": {}},
+                  collection="My API", environment="My API - Test v2")
+        env, col = ("--env", "My API - Test v2"), ("--collection", "My API")
+        cases = {"global environment": (("--env", "My API - TEST V2", *col),
+                                        "expected one Insomnia global environment named 'My API - TEST V2', found 0; "
+                                        "names are case-sensitive, and 'My API - Test v2' differs only in letter case"),
+                 "sub-environment": (("--env", "My API - Test v2/staging V2", *col),
+                                     "expected one sub-environment 'staging V2' under 'My API - Test v2', found 0; "
+                                     "names are case-sensitive, and 'Staging v2' differs only in letter case"),
+                 "collection": ((*env, "--collection", "my api"),
+                                "expected one Insomnia collection named 'my api', found 0; names are case-sensitive, "
+                                "and 'My API' differs only in letter case"),
+                 "folder": ((*env, *col, "--folder", "partner api"),
+                            "expected one top-level folder 'partner api' in 'My API', found 0; names are "
+                            "case-sensitive, and 'Partner API' differs only in letter case")}
+        for label, (options, message) in cases.items():
+            with self.subTest(label):
+                r = self.call("/x", *options)
+                self.assertEqual(r.code, 1, r)
+                self.assertNotIn(SENT, r.stderr, r)
+                self.assertIn(message, r.stderr, r)
+                self.assertNotIn("FAKE-tok", r.stderr)  # names only, never a value
+        self.assertReachedSend(self.call("/x", "--env", "My API - Test v2/Staging v2", *col, "--folder", "Partner API"))
+
+    def test_names_that_differ_only_in_letter_case_are_each_chosen_by_their_own(self):
+        # A lookup that ignored letter case found two for either name, and so could choose neither. Each one chosen
+        # here points the base URL at a port of its own.
+        self.data({"baseUrl": OFFLINE}, [folder("API"), folder("api", environment={"baseUrl": "https://127.0.0.1:3"})],
+                  subs={"Prod": {}, "PROD": {"baseUrl": "https://127.0.0.1:2"}},
+                  workspaces=[("environment", "ENV"), ("collection", "COLL")])
+        for options, host in ((("--env", "Env/Prod", "--folder", "API"), "127.0.0.1:1"),
+                              (("--env", "Env/PROD", "--folder", "API"), "127.0.0.1:2"),
+                              (("--env", "Env/Prod", "--folder", "api"), "127.0.0.1:3")):
+            with self.subTest(options=options):
+                r = self.call("/x", *options)
+                self.assertReachedSend(r)
+                self.assertIn(host, r.stderr, r)
+
+    def test_letter_case_is_folded_the_same_in_every_culture(self):
+        # Turkish casing lowers I to a dotless i, and Thai has broken a culture's string search here before. Unix reads
+        # the culture from LC_ALL; on Windows the test runs in the user's own culture.
+        self.data({"baseUrl": OFFLINE}, [], environment="title")
+        for culture in ("tr_TR.UTF-8", "th_TH.UTF-8"):
+            with self.subTest(culture=culture):
+                r = self.call("/x", "--env", "TITLE", env={"LC_ALL": culture, "LANG": culture})
+                self.assertIn("named 'TITLE', found 0; names are case-sensitive, and 'title' differs only in letter case",
+                              r.stderr, r)
+
+    def test_close_names_are_named_closest_first_and_far_ones_are_not(self):
+        self.data({"baseUrl": OFFLINE}, [], environment="My API - Test v2", collection="Test",
+                  workspaces=[("environment", n) for n in ("My API - Test v3", "My API - Prod v2", "My API - Test", "Other")])
+        r = self.call("/x", "--env", "My API - Tset v2", "--collection", "Test")
+        self.assertIn("expected one Insomnia global environment named 'My API - Tset v2', found 0; the closest names are "
+                      "'My API - Test v2' and 'My API - Test v3'", r.stderr, r)
+        r = self.call("/x", "--env", "My API - Test v2", "--collection", "Tset")
+        self.assertIn("expected one Insomnia collection named 'Tset', found 0; the closest name is 'Test'", r.stderr, r)
+        r = self.call("/x", "--env", "Nothing like it", "--collection", "Test")  # nothing close: the message as it was
+        self.assertEqual(r.stderr.strip().split("\n")[-1],
+                         "expected one Insomnia global environment named 'Nothing like it', found 0", r)
+
+    def test_a_name_that_differs_by_an_unseen_character_is_named_with_it_shown(self):
+        # -eq compares as the invariant culture does, which ignores a zero-width space and reads a no-break space as a
+        # space, so each of these environments was chosen for the name typed. Now each is named, its character escaped.
+        for name, wanted in (("Env" + ZWSP, "Env"), ("My" + NBSP + "Env", "My Env")):
+            with self.subTest(name=name):
+                self.data({"baseUrl": OFFLINE}, [], environment=name)
+                r = self.call("/x", "--env", wanted)
+                self.assertEqual(r.code, 1, r)
+                self.assertNotIn(SENT, r.stderr, r)
+                shown = "'" + "".join(esc(c) if c in (ZWSP, NBSP) else c for c in name) + "'"
+                self.assertIn(f"named '{wanted}', found 0; the closest name is {shown}", r.stderr, r)
+
+    def test_listed_names_are_escaped_cut_and_counted_on_one_line(self):
+        # A shared data folder names its own collections: none can break the message's line, hide a character in it,
+        # fake its quoting or make it long.
+        cases = {"escaped": (["Team" + NBSP + "API", "Team API" + CR + LF, "Team AP'"], "Team API",
+                             "expected one Insomnia collection named 'Team API', found 0; the closest names are "
+                             "'Team AP\\'', 'Team" + esc(NBSP) + "API' and 'Team API" + esc(CR) + esc(LF) + "'"),
+                 "counted": (["TEAM", "Team", "team", "tEAM"], "TeAm",
+                             "expected one Insomnia collection named 'TeAm', found 0; names are case-sensitive, and "
+                             "'TEAM', 'Team', 'tEAM' and 1 more differ only in letter case"),
+                 "cut": (["long" + "a" * 100], "LONG" + "A" * 100,
+                         "expected one Insomnia collection named 'LONG" + "A" * 76 + "'..., found 0; names are "
+                         "case-sensitive, and 'long" + "a" * 76 + "'... differs only in letter case")}
+        for label, (names, wanted, message) in cases.items():
+            with self.subTest(label):
+                self.data({"baseUrl": OFFLINE}, [], workspaces=[("collection", n) for n in names])
+                r = self.call("/x", "--collection", wanted)
+                self.assertEqual(r.code, 1, r)
+                self.assertEqual(r.stderr.strip().split("\n"), ["the insomnia source failed:", message], r)
+
+    def test_many_long_names_are_looked_through_quickly(self):
+        # The worst a shared data folder can do: a thousand names as long as any compared, each close to the one
+        # wanted and differing only at its end, so that no comparison stops early.
+        self.data({"baseUrl": OFFLINE}, [], workspaces=[("environment", "x" * 120 + f"{i:08d}") for i in range(999)])
+        r, seconds = self.timed_call("/x", "--env", "x" * 120 + "0000000z")
+        self.assertEqual(r.code, 1, r)
+        self.assertIn("found 0; the closest names are", r.stderr, r)
+        self.assertIn("and 996 more", r.stderr, r)
+        self.assertLess(seconds, 20, r)
+
+    def test_among_more_than_a_thousand_names_only_letter_case_is_looked_for(self):
+        r = self.functions(r"""
+            $names = [Collections.Generic.List[string]]::new()
+            for ($i = 0; $i -lt 999; $i++) { $names.Add("name $i") }
+            $names.Add('Target')
+            $within = Get-NameHint 'Targat' $names
+            $names.Add('one more')
+            [ordered]@{ within = $within; past = (Get-NameHint 'Targat' $names); cased = (Get-NameHint 'TARGET' $names) } |
+                ConvertTo-Json -Compress
+        """)
+        self.assertEqual(r, {"within": "; the closest name is 'Target'", "past": "",
+                             "cased": "; names are case-sensitive, and 'Target' differs only in letter case"})
+
+    # Names and wanted names to show and match in both sources. Characters outside the Basic Multilingual Plane, and
+    # those whose case folds to more than one, are left out: the sources count them differently in an edit, and fold
+    # them differently. Names only shown may hold them, since both show a name by its code points.
+    SHOWN_ONLY = ["e" * 79 + chr(0x1F600), "e" * 80 + chr(0x1F600), "a" + chr(0xE0041) + "b", "n" * 78 + NBSP,
+                  "n" * 74 + NBSP, "Stra" + chr(0xDF) + "e"]
+    PARITY_NAMES =["My API - Test v2", "My API - TEST V2", "my api - test v3", "My API - Prod v2", "Team" + NBSP + "API",
+                    "Team API" + CR + LF, "Team AP'", "C:\\Teams\\API", "Env" + ZWSP, "Rev" + RLO + "erse", "Café ✓",
+                    "Tab" + TAB + "bed", "Ünïcödé Ëñv", "x" * 100, "X" * 100, "Form" + chr(0x0C) + "feed",
+                    "Line" + chr(0x2028) + "sep", "Hangul" + chr(0x3164) + "filler", "Braille" + chr(0x2800) + "blank",
+                    "Selector" + chr(0xFE0F), "Del" + chr(0x7F), "", "Q", "Env"]
+    PARITY_WANTED = ["my api - test v2", "My API - Tset v2", "Team API", "Env", "ENV", "Nothing like it", "x" * 100,
+                     "q", "Tab bed", "ÜNÏCÖDÉ ËÑV", "C:\\Teams\\APl", "Revrse", "Hangulfiller"]
+
+    def test_names_show_and_near_misses_are_found_as_the_postman_source_finds_them(self):
+        r = self.functions(r"""
+            $doc = [Text.Json.JsonDocument]::Parse($env:CASES)
+            $c = ConvertFrom-JsonElement $doc.RootElement
+            [ordered]@{
+                shown = @(foreach ($n in @($c['names']) + @($c['shown'])) { Format-Name $n })
+                hints = @(foreach ($w in $c['wanted']) { Get-NameHint $w $c['names'] })
+                surrogate = Format-Name ('a' + [char]0xD800 + 'b')
+            } | ConvertTo-Json -Compress
+        """, env={"CASES": json.dumps({"names": self.PARITY_NAMES, "wanted": self.PARITY_WANTED, "shown": self.SHOWN_ONLY})})
+        self.assertEqual(r["shown"], [postman.shown_name(n) for n in self.PARITY_NAMES + self.SHOWN_ONLY])
+        self.assertEqual(r["hints"], [postman.name_hint(w, self.PARITY_NAMES) for w in self.PARITY_WANTED])
+        self.assertEqual(r["surrogate"], postman.shown_name("a" + chr(0xD800) + "b"))
+        self.assertEqual(r["surrogate"], "'a" + esc(chr(0xD800)) + "b'")
+
 
 class CookieKey(Case):
     """Round 2, attack 35: an API key that cannot travel as one cookie is refused before anything is sent."""
