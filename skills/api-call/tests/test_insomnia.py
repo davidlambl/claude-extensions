@@ -1107,13 +1107,16 @@ class DataFolder(Case):
 
 
 NBSP, ZWSP, RLO, CR, LF, TAB = chr(0xA0), chr(0x200B), chr(0x202E), chr(13), chr(10), chr(9)
+ACUTE, E_ACUTE = chr(0x301), chr(0xE9)  # a combining acute accent, and é as one character
+UNSEEN_ONLY = "only in letter case or in characters shown as escapes"
 
 
 class NearNames(Case):
     """Issue 5: a global environment, a sub-environment, a collection or a top-level folder is chosen by its exact
-    name, compared ordinal, so that letter case and every unseen character count. When none has the name, the message
-    names those that differ from it only in letter case, or else the closest few, and never chooses one: a work item's
-    'Test V2' may mean Insomnia's 'Test v2', or another environment."""
+    name, compared ordinal once both are composed (NFC), so that letter case and every unseen character count. When
+    none has the name, the message names those that differ from it only in letter case, or else only in letter case
+    or in characters it shows as escapes, or else the closest, and never chooses one: a work item's 'Test V2' may mean
+    Insomnia's 'Test v2', or another environment."""
 
     def test_a_name_in_another_letter_case_is_named_and_never_chosen(self):
         # Before, a lookup ignored letter case, so each of these chose the one Insomnia has.
@@ -1165,11 +1168,15 @@ class NearNames(Case):
                 self.assertIn("named 'TITLE', found 0; names are case-sensitive, and 'title' differs only in letter case",
                               r.stderr, r)
 
-    def test_close_names_are_named_closest_first_and_far_ones_are_not(self):
+    def test_only_the_closest_names_are_named_and_far_ones_are_not(self):
         self.data({"baseUrl": OFFLINE}, [], environment="My API - Test v2", collection="Test",
                   workspaces=[("environment", n) for n in ("My API - Test v3", "My API - Prod v2", "My API - Test", "Other")])
+        # 'My API - Test v2' is one edit from the name typed and 'My API - Test v3' two, so only the first is named.
         r = self.call("/x", "--env", "My API - Tset v2", "--collection", "Test")
-        self.assertIn("expected one Insomnia global environment named 'My API - Tset v2', found 0; the closest names are "
+        self.assertEqual(r.stderr.strip().split("\n")[-1], "expected one Insomnia global environment named "
+                         "'My API - Tset v2', found 0; the closest name is 'My API - Test v2'", r)
+        r = self.call("/x", "--env", "My API - Test v", "--collection", "Test")
+        self.assertIn("expected one Insomnia global environment named 'My API - Test v', found 0; the closest names are "
                       "'My API - Test v2' and 'My API - Test v3'", r.stderr, r)
         r = self.call("/x", "--env", "My API - Test v2", "--collection", "Tset")
         self.assertIn("expected one Insomnia collection named 'Tset', found 0; the closest name is 'Test'", r.stderr, r)
@@ -1177,24 +1184,54 @@ class NearNames(Case):
         self.assertEqual(r.stderr.strip().split("\n")[-1],
                          "expected one Insomnia global environment named 'Nothing like it', found 0", r)
 
-    def test_a_name_that_differs_by_an_unseen_character_is_named_with_it_shown(self):
+    def test_of_stage_names_that_share_a_prefix_only_the_nearest_is_named(self):
+        # Up to three edits are allowed in a name this long, which is enough to turn one short stage name into another:
+        # 'Tset' named 'Dev' and 'UAT' too, beside the 'Test' it was a typo of.
+        self.data({"baseUrl": OFFLINE}, [], environment="Contoso API - Dev",
+                  workspaces=[("environment", "Contoso API - " + s) for s in ("Test", "Prod", "UAT", "Staging", "Test v2")])
+        r = self.call("/x", "--env", "Contoso API - Tset")
+        self.assertEqual(r.stderr.strip().split("\n")[-1], "expected one Insomnia global environment named "
+                         "'Contoso API - Tset', found 0; the closest name is 'Contoso API - Test'", r)
+
+    def test_a_name_that_differs_only_in_unseen_characters_is_named_with_them_shown_however_many(self):
         # -eq compares as the invariant culture does, which ignores a zero-width space and reads a no-break space as a
-        # space, so each of these environments was chosen for the name typed. Now each is named, its character escaped.
-        for name, wanted in (("Env" + ZWSP, "Env"), ("My" + NBSP + "Env", "My Env")):
+        # space, so each of these environments was chosen for the name typed. Now each is named, its characters
+        # escaped. Counted as edits, more of them than one for every five characters named none at all.
+        for name, wanted in (("Env" + ZWSP, "Env"), ("My" + NBSP + "Env", "My Env"),
+                             ("My" + NBSP + "API" + NBSP + "-" + NBSP + "Test", "My API - Test"),
+                             ("D" + ZWSP + "e" + ZWSP + "v", "DEV"), ("Team API" + CR + LF, "Team API")):
             with self.subTest(name=name):
                 self.data({"baseUrl": OFFLINE}, [], environment=name)
                 r = self.call("/x", "--env", wanted)
                 self.assertEqual(r.code, 1, r)
                 self.assertNotIn(SENT, r.stderr, r)
-                shown = "'" + "".join(esc(c) if c in (ZWSP, NBSP) else c for c in name) + "'"
-                self.assertIn(f"named '{wanted}', found 0; the closest name is {shown}", r.stderr, r)
+                shown = "'" + "".join(esc(c) if c in (ZWSP, NBSP, CR, LF) else c for c in name) + "'"
+                self.assertIn(f"named '{wanted}', found 0; names are matched exactly, and {shown} differs {UNSEEN_ONLY}",
+                              r.stderr, r)
+        self.data({"baseUrl": OFFLINE}, [], collection="Co" + ZWSP + ZWSP + "ll")  # and a collection, likewise
+        r = self.call("/x")
+        self.assertIn("expected one Insomnia collection named 'Coll', found 0; names are matched exactly, and 'Co"
+                      + esc(ZWSP) + esc(ZWSP) + f"ll' differs {UNSEEN_ONLY}", r.stderr, r)
+
+    def test_a_name_stored_decomposed_is_the_same_name_typed_composed(self):
+        # macOS can write é as an e and a combining accent. That is the same text as é written as one character, and
+        # -eq read it so. Compared ordinal as written, the two never matched, and no hint could show why, since a
+        # combining accent is no escape.
+        decomposed, composed = "Caf" + "e" + ACUTE, "Caf" + E_ACUTE
+        self.data({"baseUrl": OFFLINE}, [folder("Re" + ACUTE + "sume" + ACUTE)], environment=decomposed)
+        self.assertReachedSend(self.call("/x", "--env", composed, "--folder", "R" + E_ACUTE + "sum" + E_ACUTE))
+        self.data({"baseUrl": OFFLINE}, [], environment=composed, workspaces=[("environment", decomposed)])
+        r = self.call("/x", "--env", composed)  # two that are the same text are two found, and neither is chosen
+        self.assertEqual(r.stderr.strip().split("\n")[-1],
+                         f"expected one Insomnia global environment named '{composed}', found 2", r)
 
     def test_listed_names_are_escaped_cut_and_counted_on_one_line(self):
         # A shared data folder names its own collections: none can break the message's line, hide a character in it,
         # fake its quoting or make it long.
-        cases = {"escaped": (["Team" + NBSP + "API", "Team API" + CR + LF, "Team AP'"], "Team API",
-                             "expected one Insomnia collection named 'Team API', found 0; the closest names are "
-                             "'Team AP\\'', 'Team" + esc(NBSP) + "API' and 'Team API" + esc(CR) + esc(LF) + "'"),
+        cases = {"escaped": (["Team" + NBSP + "API's", "Team API's" + CR + LF, "Team API's" + ZWSP], "Team API's",
+                             "expected one Insomnia collection named 'Team API\\'s', found 0; names are matched exactly, "
+                             "and 'Team API\\'s" + esc(CR) + esc(LF) + "', 'Team API\\'s" + esc(ZWSP) + "' and 'Team"
+                             + esc(NBSP) + f"API\\'s' differ {UNSEEN_ONLY}"),
                  "counted": (["TEAM", "Team", "team", "tEAM"], "TeAm",
                              "expected one Insomnia collection named 'TeAm', found 0; names are case-sensitive, and "
                              "'TEAM', 'Team', 'tEAM' and 1 more differ only in letter case"),
@@ -1209,13 +1246,26 @@ class NearNames(Case):
                 self.assertEqual(r.stderr.strip().split("\n"), ["the insomnia source failed:", message], r)
 
     def test_many_long_names_are_looked_through_quickly(self):
-        # The worst a shared data folder can do: a thousand names as long as any compared, each close to the one
-        # wanted and differing only at its end, so that no comparison stops early.
+        # The worst a shared data folder can do: a thousand names as long as any compared, each differing from the one
+        # wanted only at its end, so that no comparison stops early. Ten are one edit away, and named.
         self.data({"baseUrl": OFFLINE}, [], workspaces=[("environment", "x" * 120 + f"{i:08d}") for i in range(999)])
         r, seconds = self.timed_call("/x", "--env", "x" * 120 + "0000000z")
         self.assertEqual(r.code, 1, r)
         self.assertIn("found 0; the closest names are", r.stderr, r)
-        self.assertIn("and 996 more", r.stderr, r)
+        self.assertIn("and 7 more", r.stderr, r)
+        self.assertLess(seconds, 20, r)
+        # None close: then no comparison is cut short by a closer one found before it.
+        r, seconds = self.timed_call("/x", "--env", "x" * 120 + "zzzzzzzz")
+        self.assertEqual(r.stderr.strip().split("\n")[-1],
+                         "expected one Insomnia global environment named '" + "x" * 80 + "'..., found 0", r)
+        self.assertLess(seconds, 20, r)
+        # Names past the Basic Multilingual Plane, whose every character is looked at on its own to compare them: 64
+        # emoji each, the most a compared name holds, differing from the one wanted only in the last two.
+        same = "".join(chr(0x1F600 + i) for i in range(62))
+        names = [same + chr(0x1F600 + i // 64) + chr(0x1F600 + i % 64) for i in range(999)]
+        self.data({"baseUrl": OFFLINE}, [], workspaces=[("environment", n) for n in names])
+        r, seconds = self.timed_call("/x", "--env", same + chr(0x1F900) * 2)
+        self.assertIn("found 0", r.stderr, r)
         self.assertLess(seconds, 20, r)
 
     def test_among_more_than_a_thousand_names_only_letter_case_is_looked_for(self):
@@ -1231,18 +1281,39 @@ class NearNames(Case):
         self.assertEqual(r, {"within": "; the closest name is 'Target'", "past": "",
                              "cased": "; names are case-sensitive, and 'Target' differs only in letter case"})
 
-    # Names and wanted names to show and match in both sources. Characters outside the Basic Multilingual Plane, and
-    # those whose case folds to more than one, are left out: the sources count them differently in an edit, and fold
-    # them differently. Names only shown may hold them, since both show a name by its code points.
+    # Names and wanted names to show and match in both sources. Characters outside the Basic Multilingual Plane that
+    # show, and those whose case folds to more than one, are left out: the sources count them differently in an edit,
+    # and fold them differently. Names only shown may hold them, since both show a name by its code points.
     SHOWN_ONLY = ["e" * 79 + chr(0x1F600), "e" * 80 + chr(0x1F600), "a" + chr(0xE0041) + "b", "n" * 78 + NBSP,
                   "n" * 74 + NBSP, "Stra" + chr(0xDF) + "e"]
     PARITY_NAMES =["My API - Test v2", "My API - TEST V2", "my api - test v3", "My API - Prod v2", "Team" + NBSP + "API",
                     "Team API" + CR + LF, "Team AP'", "C:\\Teams\\API", "Env" + ZWSP, "Rev" + RLO + "erse", "Café ✓",
                     "Tab" + TAB + "bed", "Ünïcödé Ëñv", "x" * 100, "X" * 100, "Form" + chr(0x0C) + "feed",
                     "Line" + chr(0x2028) + "sep", "Hangul" + chr(0x3164) + "filler", "Braille" + chr(0x2800) + "blank",
-                    "Selector" + chr(0xFE0F), "Del" + chr(0x7F), "", "Q", "Env"]
+                    "Selector" + chr(0xFE0F), "Del" + chr(0x7F), "", "Q", "Env",
+                    "My" + NBSP + "API" + NBSP + "-" + NBSP + "Test", "D" + ZWSP + "e" + ZWSP + "v", "Cafe" + ACUTE + " API",
+                    "Tag" + chr(0xE0041) + "ged", "Wide" + chr(0x3000) + "space"] + \
+                   ["Contoso API - " + s for s in ("Dev", "Test", "Prod", "UAT", "Staging", "Test v2")]
     PARITY_WANTED = ["my api - test v2", "My API - Tset v2", "Team API", "Env", "ENV", "Nothing like it", "x" * 100,
-                     "q", "Tab bed", "ÜNÏCÖDÉ ËÑV", "C:\\Teams\\APl", "Revrse", "Hangulfiller"]
+                     "q", "Tab bed", "ÜNÏCÖDÉ ËÑV", "C:\\Teams\\APl", "Revrse", "Hangulfiller", "My API - Test", "DEV",
+                     "Caf" + E_ACUTE + " API", "CAF" + E_ACUTE + " API", "Tagged", "Wide space", "Contoso API - Tset",
+                     "Contoso Api - Prd", "Contoso API - QA", "Contoso API - Dev2", "Contoso API - Test v"]
+    # Names to read as the near-miss search reads them: each space other than U+0020 as one, every other character
+    # shown as an escape dropped, then composed and folded.
+    SKELETONS = ["My" + NBSP + "API", "Thin" + chr(0x2009) + "space", "Wide" + chr(0x3000) + "space",
+                 "Soft" + chr(0xAD) + "hyphen", "Byte" + chr(0xFEFF) + "order", "Line" + chr(0x2028) + "sep" + chr(0x2029),
+                 "Team API" + CR + LF, "Tab" + TAB + "Del" + chr(0x7F), "Braille" + chr(0x2800) + "Object" + chr(0xFFFC),
+                 "Hangul" + chr(0x3164) + chr(0xFFA0), "Joiner" + chr(0x34F) + "Selector" + chr(0xFE0F),
+                 "Tag" + chr(0xE0041) + chr(0xE007F), "Selector" + chr(0xE0100) + chr(0xE01EF) + chr(0xE01F0),
+                 "Unassigned" + chr(0x378) + chr(0xE0080) + chr(0xFFFE) + chr(0x1FFFE), "Private" + chr(0xF0000),
+                 "Fillers" + chr(0x115F) + chr(0x1160) + chr(0x17B4) + chr(0x17B5) + chr(0x180B) + chr(0x180F),
+                 "Emoji" + chr(0x1F600) + chr(0x1F600) + "x" + chr(0x1F680), "Cafe" + ACUTE,
+                 "e" + ZWSP + ACUTE, "KELVIN" + chr(0x212A), "Ünïcödé Ëñv", "Rev" + RLO + "erse", ""]
+    # Pairs that are the same name or not: composed, compared ordinal. A name .NET cannot compose (U+FFFE) is compared
+    # as it is.
+    SAME = [("Cafe" + ACUTE, "Caf" + E_ACUTE), ("a" + ACUTE + chr(0x323), "a" + chr(0x323) + ACUTE), ("Env", "ENV"),
+            ("Env", "Env" + ZWSP), ("My Env", "My" + NBSP + "Env"), ("x" + chr(0xFFFE), "x" + chr(0xFFFE)),
+            ("e" + ACUTE + chr(0xFFFE), E_ACUTE + chr(0xFFFE))]
 
     def test_names_show_and_near_misses_are_found_as_the_postman_source_finds_them(self):
         r = self.functions(r"""
@@ -1251,13 +1322,25 @@ class NearNames(Case):
             [ordered]@{
                 shown = @(foreach ($n in @($c['names']) + @($c['shown'])) { Format-Name $n })
                 hints = @(foreach ($w in $c['wanted']) { Get-NameHint $w $c['names'] })
+                skeletons = @(foreach ($n in $c['skeletons']) { Get-Skeleton $n })
+                same = @(foreach ($p in $c['same']) { Test-SameName $p[0] $p[1] })
                 surrogate = Format-Name ('a' + [char]0xD800 + 'b')
+                surrogateSkeleton = Get-Skeleton ('A' + [char]0xD800 + 'b' + [char]0xDC00)
+                surrogateSame = Test-SameName ('a' + [char]0xDC00) ('a' + [char]0xDC00)
             } | ConvertTo-Json -Compress
-        """, env={"CASES": json.dumps({"names": self.PARITY_NAMES, "wanted": self.PARITY_WANTED, "shown": self.SHOWN_ONLY})})
+        """, env={"CASES": json.dumps({"names": self.PARITY_NAMES, "wanted": self.PARITY_WANTED, "shown": self.SHOWN_ONLY,
+                                       "skeletons": self.SKELETONS, "same": self.SAME})})
         self.assertEqual(r["shown"], [postman.shown_name(n) for n in self.PARITY_NAMES + self.SHOWN_ONLY])
         self.assertEqual(r["hints"], [postman.name_hint(w, self.PARITY_NAMES) for w in self.PARITY_WANTED])
+        self.assertEqual(r["skeletons"], [postman.skeleton(n) for n in self.SKELETONS])
+        self.assertEqual(r["same"], [postman.same_name(a, b) for a, b in self.SAME])
+        self.assertEqual(r["same"], [True, True, False, False, False, True, False])
         self.assertEqual(r["surrogate"], postman.shown_name("a" + chr(0xD800) + "b"))
         self.assertEqual(r["surrogate"], "'a" + esc(chr(0xD800)) + "b'")
+        self.assertEqual(r["surrogateSkeleton"], postman.skeleton("A" + chr(0xD800) + "b" + chr(0xDC00)))
+        self.assertEqual(r["surrogateSkeleton"], "ab")
+        self.assertTrue(r["surrogateSame"])
+        self.assertTrue(postman.same_name("a" + chr(0xDC00), "a" + chr(0xDC00)))
 
 
 class CookieKey(Case):
