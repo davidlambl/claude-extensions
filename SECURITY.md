@@ -17,7 +17,7 @@ The newest version of each extension is the supported one. There are no backport
 They run on your machine, with your access. That is the point of them, and it is also the risk.
 
 - **api-call** reads Insomnia's local data and Postman's exports, including the API keys, bearer tokens, basic-auth passwords and client certificates a collection holds. It sends one GET to the environment you name, which may be production, or two with `--warm`: one untimed, then the one it records.
-- **ado-evidence** uploads files and posts a comment to Azure DevOps under your identity, with a token from the Azure CLI or `AZURE_DEVOPS_TOKEN`.
+- **ado-evidence** uploads files and posts a comment to Azure DevOps under your identity, with a token from the Azure CLI or `AZURE_DEVOPS_TOKEN`. Its `crop.py` reads one PNG and writes one beside it, or where `--out` says, never over the input, and reaches no network.
 - **context-bar** reads this session's token counts and draws them. To count the overhead as `/context` does, it has Claude Code send token-count requests to the Anthropic API, on the session's own sign-in, one per tool and memory file, the first time it measures a session and again whenever the overhead changes. It makes no other network calls and handles no credentials itself.
 
 ## What the code is meant to guarantee
@@ -41,6 +41,7 @@ These are the properties a bug report should test against:
 - Everything ado-evidence prints has the token masked before any of it is cut short, in every form listed above for api-call.
 - ado-evidence names an image by its file name alone, with no folder, drive or colon, and looks it up in the images folder, so a comment cannot reach a file elsewhere, on Windows as on macOS and Linux.
 - Neither skill writes to Insomnia's data or Postman's exports.
+- `crop.py`'s output holds only rows and columns of its input, in their order. A row or column is dropped only when it is identical to the one before it and more than `--gap` of them run together; nothing is blended, drawn or moved, and `--grid`'s ruled copy is for reading coordinates, never evidence. It never writes over its input, and replaces a file `--out` names only with `--overwrite`. A PNG's dimensions are checked before anything is allocated for it, 40 megapixels and 256 MB of filtered pixel data at most, no more than that and a byte is read from the file, its compressed data inflates to no more than its header declares, and a bad CRC on a critical chunk or a file cut short is refused.
 
 ## Known limits, by design
 
@@ -60,4 +61,6 @@ These are not bugs. They are the edges of the guarantees above.
 - **An Insomnia global environment whose name holds a `/` cannot be chosen.** `--env` reads `Name/Sub-environment`, so the text after the first `/` names a sub-environment.
 - **Postman's `--timeout` bounds each socket read, not the whole response.** A server that sends slowly can keep a call open past it.
 - **Posting acts as you.** Preview with `--dry-run` and approve the text before it goes up.
+- **A squeeze shrinks a uniform area whose size carries meaning**, a bar in a chart or a progress bar, exactly as it shrinks blank space. The skill does not squeeze those, and says in the caption when blank space was closed up.
+- **`crop.py` keeps a 16-bit sample's high byte**, and drops text, time and EXIF chunks; the colour chunks are carried over.
 - **An eval or screenshot run calls real endpoints and real models** with your credentials.

@@ -1,6 +1,6 @@
 # ADO evidence
 
-Posts images with captions as a markdown comment on an Azure DevOps work item, or revises a comment already posted, then reads it back and checks that every image rendered and matches its file. Made for test evidence from [api-call](../api-call/), but any images will do.
+Posts images with captions as a markdown comment on an Azure DevOps work item, or revises a comment already posted, then reads it back and checks that every image rendered and matches its file. Made for test evidence from [api-call](../api-call/), but any images will do. A screenshot that shows more than the evidence is cut down first by `crop.py`, with no imaging library.
 
 It comes as a skill: ask Claude to post the evidence on a work item, and it drafts the comment, previews it, and posts once you approve the text. The script also runs on its own.
 
@@ -51,6 +51,24 @@ Test, build 2026.10.8.1. 404 is the removed route; 200 is the control.
 {{image:control-after.png}}
 ```
 
+## Cut a screenshot down
+
+A screenshot of a whole window carries blank space around the evidence. `crop.py` cuts a PNG down with the standard library alone: it reads any PNG that is not interlaced, at every depth and colour type, and writes an 8-bit PNG beside it, never over the input.
+
+```sh
+python3 skills/ado-evidence/scripts/crop.py shot.png --squeeze --out shots/query.png
+```
+
+| Option | What it does |
+| --- | --- |
+| `--squeeze` | Closes up every run of identical rows, then of identical columns, longer than the gap to the gap. Every row and column that differs from its neighbour stays, so a blank editor, an empty results pane and the space between a status bar's two ends go, and nothing else. A full-screen SQL Server Management Studio window comes down to the query, the results and the status bar, with the server details beside "Query executed successfully". |
+| `--gap N` | The pixels a squeezed run keeps; 16 by default. |
+| `--box LEFT,TOP,RIGHT,BOTTOM` | Keeps the region from LEFT,TOP up to but not including RIGHT,BOTTOM, clamped to the image. With `--squeeze`, the box is cut first. |
+| `--grid` | Writes `shot-grid.png`, the image ruled every 100 pixels and labelled with its coordinates, to read a box's edges from. On its own. |
+| `--out FILE` | Where the result goes; `shot-cropped.png` beside the input otherwise. A file that exists is replaced only with `--overwrite`; the input never. |
+
+It prints one line of JSON: the image's size, the file written and its size, the box as used, and the rows and columns squeezed. With no option it prints the size and writes nothing. A full-HD screenshot takes about a second, and a 2560 x 1440 one whose every row uses the slowest PNG filter about two. A JPEG, an interlaced PNG, a damaged file, or one past 40 megapixels or 256 MB of pixel data, is refused with one line that says what to do.
+
 ## What it costs and touches
 
 - **Posting acts as you.** It uploads attachments and adds or edits a comment under your Azure DevOps identity. Run with `--dry-run` first.
@@ -58,6 +76,7 @@ Test, build 2026.10.8.1. 404 is the removed route; 200 is the control.
 - **What it prints is scrubbed.** Every line has the token masked, as is, percent-encoded, JSON-escaped or as HTML character references. So does the Basic value a personal access token goes as. The mask comes before any text is cut short, so a cut never leaves part of a token standing. An error body in UTF-16 is decoded first. A token encoded twice, or split into pieces, is not masked.
 - **An image is named by its file name alone**, looked up in the images folder; a path, a drive such as `C:shot.png`, or any colon is refused.
 - **Editing leaves the earlier images attached**, unreferenced; Azure DevOps keeps a comment's attachments.
+- **`crop.py` reads one PNG and writes one**, beside it or at `--out`, never over its input, and reaches no network. A squeeze keeps only rows and columns of the input, in their order, and drops one only when it is identical to the one before it: nothing is blended, drawn or moved. A uniform area whose size carries meaning, such as a bar in a chart, shrinks like blank space, so charts are not squeezed. A 16-bit sample keeps its high byte; the colour chunks are carried over and the text, time and EXIF chunks are not.
 
 ## Dependencies
 
