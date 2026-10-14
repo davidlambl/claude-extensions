@@ -329,6 +329,81 @@ class Build(unittest.TestCase):
         self.assertTrue(b["url"].endswith("api+key=FAKE-key-4b8d2e61%0A"))
 
 
+def esc(ch):
+    """ch as a message shows it in a name: a backslash, then u and four hex digits, or U and eight past the BMP."""
+    cp = ord(ch)
+    return "\\" + (f"u{cp:04x}" if cp <= 0xFFFF else f"U{cp:08x}")
+
+
+NBSP, RLO, CR, LF = chr(0xA0), chr(0x202E), chr(13), chr(10)
+
+
+class NearNames(unittest.TestCase):
+    """Issue 5, as in the Insomnia source: --folder names a top-level folder exactly, in its own letter case. When none
+    has the name, the message names those that differ from it only in letter case, or else the closest few, each
+    quoted with every unseen character escaped, on one line, and never chooses one."""
+
+    FOLDERS = [folder("Reports", BEARER), folder("Admin", APIKEY_HEADER), folder("Public", NOAUTH)]
+
+    def problem(self, name, folders=None):
+        with self.assertRaises(postman.Problem) as cm:
+            postman.pick_folder(collection(folders=self.FOLDERS if folders is None else folders), name)
+        return str(cm.exception)
+
+    def test_a_folder_in_another_letter_case_is_named_and_never_chosen(self):
+        self.assertEqual(self.problem("reports"), "expected one top-level folder 'reports', found 0; names are "
+                                                  "case-sensitive, and 'Reports' differs only in letter case")
+        both = [folder("Reports", BEARER), folder("REPORTS", APIKEY_HEADER)]
+        self.assertEqual(postman.pick_folder(collection(folders=both), "REPORTS")["auth"], APIKEY_HEADER)
+        self.assertEqual(self.problem("reports", both), "expected one top-level folder 'reports', found 0; names are "
+                                                        "case-sensitive, and 'REPORTS' and 'Reports' differ only in letter case")
+
+    def test_close_folders_are_named_closest_first_and_far_ones_are_not(self):
+        self.assertEqual(self.problem("Reprots"), "expected one top-level folder 'Reprots', found 0; the closest name is 'Reports'")
+        folders = [folder(n) for n in ("Reports v2", "Reports v3", "Reports", "Imports v2")]
+        self.assertEqual(self.problem("Repotrs v2", folders), "expected one top-level folder 'Repotrs v2', found 0; the "
+                                                              "closest names are 'Reports v2' and 'Reports v3'")
+        self.assertEqual(self.problem("Billing"), "expected one top-level folder 'Billing', found 0")
+
+    def test_a_name_is_quoted_with_every_unseen_character_escaped_and_cut(self):
+        cases = {"plain": ("Reports", "'Reports'"),
+                 "letters and symbols as they are": ("Café ✓ Ünï", "'Café ✓ Ünï'"),
+                 "a quote and a backslash": ("Bob's C:\\API", "'Bob\\'s C:\\\\API'"),
+                 "line breaks": ("a" + CR + LF + "b" + chr(0x2028) + "c", "'a" + esc(CR) + esc(LF) + "b" + esc(chr(0x2028)) + "c'"),
+                 "bidi and format": ("ab" + RLO + "cd" + chr(0x200B) + chr(0x2066), "'ab" + esc(RLO) + "cd" + esc(chr(0x200B)) + esc(chr(0x2066)) + "'"),
+                 "spaces that are not U+0020": ("a" + NBSP + "b" + chr(0x3000), "'a" + esc(NBSP) + "b" + esc(chr(0x3000)) + "'"),
+                 "blank letters and symbols": ("a" + chr(0x3164) + chr(0x2800) + chr(0xFFFC), "'a" + esc(chr(0x3164)) + esc(chr(0x2800)) + esc(chr(0xFFFC)) + "'"),
+                 "a tag past the BMP": ("a" + chr(0xE0041), "'a" + esc(chr(0xE0041)) + "'"),
+                 "a lone surrogate": ("a" + chr(0xD800), "'a" + esc(chr(0xD800)) + "'"),
+                 "an emoji as it is": ("a" + chr(0x1F600), "'a" + chr(0x1F600) + "'"),
+                 "cut at 80": ("n" * 81, "'" + "n" * 80 + "'..."),
+                 "80 kept whole": ("n" * 80, "'" + "n" * 80 + "'"),
+                 "an escape is never split": ("n" * 78 + NBSP, "'" + "n" * 78 + "'...")}
+        for label, (name, shown) in cases.items():
+            with self.subTest(label):
+                self.assertEqual(postman.shown_name(name), shown)
+
+    def test_more_than_three_are_counted_and_closeness_is_looked_for_among_a_thousand_names_at_most(self):
+        self.assertEqual(postman.name_hint("TeAm", ["team", "TEAM", "Team", "tEAM", "Other"]),
+                         "; names are case-sensitive, and 'TEAM', 'Team', 'tEAM' and 1 more differ only in letter case")
+        names = [f"name {i}" for i in range(999)] + ["Target"]
+        self.assertEqual(postman.name_hint("Targat", names), "; the closest name is 'Target'")
+        self.assertEqual(postman.name_hint("Targat", names + ["one more"]), "")
+        self.assertEqual(postman.name_hint("TARGET", names + ["one more"]),
+                         "; names are case-sensitive, and 'Target' differs only in letter case")
+
+    def test_the_message_reaches_stderr_on_one_line(self):
+        with tempfile.TemporaryDirectory() as root:
+            env, col = Path(root) / "env.json", Path(root) / "col.json"
+            env.write_text(json.dumps(ENV), encoding="utf-8")
+            col.write_text(json.dumps(collection(folders=[folder("Team" + NBSP + "API"), folder("Team API" + CR + LF)])),
+                           encoding="utf-8")
+            code, out, err = run_main(["--env", str(env), "--collection", str(col), "--folder", "Team API", "--path", "/x"])
+        self.assertEqual((code, out), (1, ""), err)
+        self.assertEqual(err, "expected one top-level folder 'Team API', found 0; the closest names are 'Team"
+                         + esc(NBSP) + "API' and 'Team API" + esc(CR) + esc(LF) + "'")
+
+
 class Exposed(unittest.TestCase):
     RECORD = {"url": "https://api.example.com/items", "auth": "none", "request_headers": {"Accept": "application/json"},
               "response_headers": {}, "body": "ok"}
