@@ -4,7 +4,7 @@ Every input PNG here is written by this file's own encoder, which imports nothin
 writes is read back by a decoder of this file's own, so neither side is graded by its own rules. The tests in
 InTheBrowser capture pages with a real headless Chrome, and skip where none is found.
 """
-import base64, json, os, random, shutil, struct, subprocess, sys, tempfile, threading, time, tracemalloc, unittest, zlib
+import base64, io, json, os, random, shutil, struct, subprocess, sys, tempfile, threading, time, tracemalloc, unittest, zlib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -624,20 +624,24 @@ class Squeezes(unittest.TestCase):
 
 # --- The command line
 
-def run_crop(*args, cwd):
+def run_crop(*args, cwd, env=None):
     """crop.py run whole, as the skill runs it, from cwd."""
-    return subprocess.run([sys.executable, str(CROP), *map(str, args)], cwd=cwd, capture_output=True, text=True,
+    return subprocess.run([sys.executable, str(CROP), *map(str, args)], cwd=cwd, env=env, capture_output=True, text=True,
                           encoding="utf-8", timeout=120)
 
 
 class CommandLine(unittest.TestCase):
     """crop.py prints one line of JSON, writes beside the input or at --out and never over the input or over another
-    file unasked, and refuses with one line and no traceback."""
+    file unasked, puts the strips --edges asks for in a fresh temporary folder and nowhere else, and refuses with one
+    line and no traceback. Each run is given a temporary folder of the test's own, where --edges makes its folder."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
         (self.dir / "shots").mkdir()
+        self.scratch = self.dir / "scratch"
+        self.scratch.mkdir()
+        self.env = dict(os.environ, TMPDIR=str(self.scratch))  # Python's tempfile looks at TMPDIR first, on Windows too
         self.pixels = sample_rows(13, 5, 6, 8, random.Random(21))
         self.rows = rgba_of(self.pixels, 6, 8)
         self.source = written(self.dir / "shots" / "in.png", png(self.pixels, filters=[4, 3, 2, 1, 0]))
@@ -646,7 +650,7 @@ class CommandLine(unittest.TestCase):
         self.tmp.cleanup()
 
     def ok(self, *args):
-        proc = run_crop(*args, cwd=self.dir)
+        proc = run_crop(*args, cwd=self.dir, env=self.env)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stderr, "")
         lines = proc.stdout.splitlines()
@@ -654,7 +658,7 @@ class CommandLine(unittest.TestCase):
         return json.loads(lines[0])
 
     def refused(self, *args, code=1):
-        proc = run_crop(*args, cwd=self.dir)
+        proc = run_crop(*args, cwd=self.dir, env=self.env)
         self.assertEqual(proc.returncode, code, proc.stdout + proc.stderr)
         self.assertEqual(proc.stdout, "")
         self.assertNotIn("Traceback", proc.stderr)
@@ -666,14 +670,15 @@ class CommandLine(unittest.TestCase):
     def test_no_operation_prints_the_size_and_writes_nothing(self):
         out = self.ok("shots/in.png")
         self.assertEqual(out, {"image": str(self.source.resolve()), "width": 13, "height": 5, "out": None, "out_width": None,
-                               "out_height": None, "box": None, "squeezed_rows": 0, "squeezed_columns": 0})
+                               "out_height": None, "box": None, "squeezed_rows": 0, "squeezed_columns": 0, "edges": None})
         self.assertEqual(self.files(), ["in.png"])
 
     def test_box_writes_the_default_name_beside_the_input(self):
         out = self.ok("shots/in.png", "--box", "2,1,6,4")
         self.assertEqual(self.files(), ["in-cropped.png", "in.png"])
         self.assertEqual(out["out"], str((self.dir / "shots" / "in-cropped.png").resolve()))
-        self.assertEqual((out["out_width"], out["out_height"], out["box"]), (4, 3, [2, 1, 6, 4]))
+        self.assertEqual((out["out_width"], out["out_height"], out["box"], out["edges"]), (4, 3, [2, 1, 6, 4], None))
+        self.assertEqual(list(self.scratch.iterdir()), [])  # no strips unasked
         self.assertEqual(read((self.dir / "shots" / "in-cropped.png").read_bytes())[3], [row[2 * 4:6 * 4] for row in self.rows[1:4]])
         out = self.ok("shots/in.png", "--box", "-5,-5,100,100")  # clamped, and the default name replaced unasked
         self.assertEqual(out["box"], [0, 0, 13, 5])
@@ -730,6 +735,105 @@ class CommandLine(unittest.TestCase):
         out = self.ok(source, "--box", "0,0,2,2")
         self.assertEqual(out["image"], str(source.resolve()))
         self.assertTrue((self.dir / "shots" / "snímek 写真-cropped.png").exists())
+
+    def strips(self, out):
+        """The two strips the JSON line names, as (path, what the test's own reader makes of the file) each."""
+        return [(Path(out["edges"][end]), read(Path(out["edges"][end]).read_bytes())) for end in ("top", "bottom")]
+
+    def test_edges_writes_the_top_and_bottom_of_the_result_into_a_fresh_temporary_folder(self):
+        gama = (b"gAMA", struct.pack(">I", 45455))
+        pixels = sample_rows(13, 30, 6, 8, random.Random(41))
+        written(self.dir / "shots" / "tall.png", png(pixels, extras=[gama]))
+        (self.dir / "evidence").mkdir()
+        out = self.ok("shots/tall.png", "--box", "2,1,11,29", "--edges", "5", "--out", "evidence/query.png")
+        result = [row[2 * 4:11 * 4] for row in rgba_of(pixels, 6, 8)[1:29]]
+        self.assertEqual(read((self.dir / "evidence" / "query.png").read_bytes())[3], result)  # the result as without it
+        (top, (width, height, _, top_rows)), (bottom, (_, _, _, bottom_rows)) = self.strips(out)
+        self.assertEqual((top.name, bottom.name), ("query-top.png", "query-bottom.png"))
+        self.assertEqual((width, height), (9, 5))  # the result's full width
+        self.assertEqual((top_rows, bottom_rows), (result[:5], result[-5:]))
+        self.assertEqual(chunk_kinds(top.read_bytes()), [b"IHDR", b"gAMA", b"IDAT", b"IEND"])  # encoded as the result is
+        folder = top.parent
+        self.assertEqual((bottom.parent, folder.parent), (folder, self.scratch.resolve()))  # a folder of their own
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), ["query-bottom.png", "query-top.png"])  # no part file
+        self.assertEqual(sorted(p.name for p in (self.dir / "evidence").iterdir()), ["query.png"])  # none beside the evidence
+        self.assertEqual(self.files(), ["in.png", "tall.png"])  # or beside the input
+        again = self.ok("shots/tall.png", "--box", "2,1,11,29", "--edges", "5", "--out", "evidence/query.png", "--overwrite")
+        self.assertNotEqual(Path(again["edges"]["top"]).parent, folder)  # a fresh folder each run
+
+    def test_edges_with_squeeze_are_of_the_squeezed_result(self):
+        rows = text_rows(3, 40, 0, 10) + blank(30, 40) + text_rows(3, 40, 30, 40, y0=3)
+        written(self.dir / "shots" / "blank.png", png([[tuple(row[x * 4:(x + 1) * 4]) for x in range(40)] for row in rows]))
+        out = self.ok("shots/blank.png", "--squeeze", "--gap", "4", "--edges", "4")
+        expected, height, width = squeezed_by_hand(rows, 4)
+        self.assertEqual((out["out_width"], out["out_height"]), (width, height))
+        (top, (top_width, _, _, top_rows)), (bottom, (_, _, _, bottom_rows)) = self.strips(out)
+        self.assertEqual((top.name, bottom.name), ("blank-cropped-top.png", "blank-cropped-bottom.png"))
+        self.assertEqual((top_width, top_rows, bottom_rows), (width, expected[:4], expected[-4:]))
+        self.assertEqual(self.files(), ["blank-cropped.png", "blank.png", "in.png"])
+
+    def test_edges_on_its_own_cuts_the_input_and_writes_nothing_beside_it(self):
+        out = self.ok("shots/in.png", "--edges", "2")
+        self.assertEqual((out["out"], out["out_width"], out["out_height"], out["box"]), (None, None, None, None))
+        (top, (_, _, _, top_rows)), (bottom, (_, _, _, bottom_rows)) = self.strips(out)
+        self.assertEqual((top.name, bottom.name), ("in-top.png", "in-bottom.png"))
+        self.assertEqual((top_rows, bottom_rows), (self.rows[:2], self.rows[-2:]))
+        out = self.ok("shots/in.png", "--edges", "2", "--out", "evidence.png")  # nothing to cut, so --out names nothing
+        self.assertEqual((out["out"], Path(out["edges"]["top"]).name), (None, "in-top.png"))
+        self.assertFalse((self.dir / "evidence.png").exists())
+        self.assertEqual(self.files(), ["in.png"])
+        self.assertEqual(read(self.source.read_bytes())[3], self.rows)  # the input is as it was
+
+    def test_edges_of_one_row_and_at_or_past_the_height(self):
+        (_, (_, _, _, top_rows)), (_, (_, _, _, bottom_rows)) = self.strips(self.ok("shots/in.png", "--edges", "1"))
+        self.assertEqual((top_rows, bottom_rows), (self.rows[:1], self.rows[-1:]))
+        for n in ("5", "6", "1000"):  # the image is 5 rows tall: each strip is the whole of it
+            with self.subTest(n=n):
+                (_, (_, _, _, top_rows)), (_, (_, _, _, bottom_rows)) = self.strips(self.ok("shots/in.png", "--edges", n))
+                self.assertEqual((top_rows, bottom_rows), (self.rows, self.rows))
+        out = self.ok("shots/in.png", "--box", "0,0,13,3", "--edges", "4")  # the result's height counts, not the input's
+        self.assertEqual([strip[3] for _, strip in self.strips(out)], [self.rows[:3], self.rows[:3]])
+
+    def test_edges_refusals_write_nothing(self):
+        for n in ("0", "-3"):
+            with self.subTest(n=n):
+                message = self.refused("shots/in.png", "--box", "0,0,2,2", "--edges", n)
+                self.assertIn("--edges", message)
+                self.assertIn("at least 1", message)
+                self.assertEqual(len(message.splitlines()), 1)
+        self.refused("shots/in.png", "--edges", "x", code=2)
+        self.refused("shots/in.png", "--edges", code=2)
+        self.assertIn("--grid", self.refused("shots/in.png", "--grid", "--edges", "80"))
+        written(self.dir / "query.png", b"before")
+        self.assertIn("exists", self.refused("shots/in.png", "--box", "0,0,2,2", "--edges", "1", "--out", "query.png"))
+        self.assertIn("cannot write", self.refused("shots/in.png", "--box", "0,0,2,2", "--edges", "1", "--out", "nowhere/query.png"))
+        self.assertEqual((self.dir / "query.png").read_bytes(), b"before")
+        self.assertEqual((self.files(), list(self.scratch.iterdir())), (["in.png"], []))
+
+    def test_a_run_that_fails_while_writing_leaves_nothing_behind(self):
+        # Whichever of the three files cannot be written, the result is not written and the strips' folder is gone.
+        real = crop.write
+        for failing in ("query-top.png", "query-bottom.png", "query.png"):
+            def write(path, data, failing=failing):
+                if Path(path).name == failing:
+                    raise crop.Problem(f"cannot write {path}: no space left on device")
+                real(path, data)
+            with self.subTest(failing=failing):
+                with patch.object(crop, "write", write), patch.object(tempfile, "tempdir", str(self.scratch)), \
+                        patch("sys.stdout", io.StringIO()) as stdout, patch("sys.stderr", io.StringIO()), \
+                        self.assertRaises(SystemExit) as caught:
+                    crop.main([str(self.source), "--box", "0,0,2,2", "--edges", "1", "--out", str(self.dir / "query.png")])
+                self.assertIn("cannot write", str(caught.exception.code))
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertEqual(list(self.scratch.iterdir()), [])
+                self.assertFalse((self.dir / "query.png").exists())
+        with patch.object(tempfile, "mkdtemp", side_effect=PermissionError(13, "Permission denied")), \
+                patch("sys.stdout", io.StringIO()) as stdout, patch("sys.stderr", io.StringIO()), \
+                self.assertRaises(SystemExit) as caught:  # no temporary folder to be had: refused on one line
+            crop.main([str(self.source), "--box", "0,0,2,2", "--edges", "1", "--out", str(self.dir / "query.png")])
+        self.assertEqual(str(caught.exception.code), "cannot make a temporary folder for --edges: Permission denied")
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertFalse((self.dir / "query.png").exists())
 
 
 # --- The grid

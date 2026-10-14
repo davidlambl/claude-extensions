@@ -65,9 +65,10 @@ python3 skills/ado-evidence/scripts/crop.py shot.png --squeeze --out shots/query
 | `--gap N` | The pixels a squeezed run keeps; 16 by default. |
 | `--box LEFT,TOP,RIGHT,BOTTOM` | Keeps the region from LEFT,TOP up to but not including RIGHT,BOTTOM, clamped to the image. With `--squeeze`, the box is cut first. |
 | `--grid` | Writes `shot-grid.png`, the image ruled every 100 pixels and labelled with its coordinates, to read a box's edges from. On its own. |
+| `--edges N` | Writes the first and last N rows of the result at its full width, to look at its edges at full size. The two strips are named after the result, such as `shot-cropped-top.png` and `shot-cropped-bottom.png`, and go in a fresh temporary folder, never beside the evidence. The JSON line gives their paths under `edges`. With no `--box` or `--squeeze`, it cuts them from the input, to check a result already written. An N at or past the height makes each strip the whole image. Not with `--grid`. |
 | `--out FILE` | Where the result goes; `shot-cropped.png` beside the input otherwise. A file `--out` names that exists is replaced only with `--overwrite`; the default name is the script's own to replace, and the input never. |
 
-It prints one line of JSON: the image's size, the file written and its size, the box as used, and the rows and columns squeezed. With no option it prints the size and writes nothing. A full-HD screenshot takes about a second, and a 2560 x 1440 one whose every row uses the slowest PNG filter about two. A JPEG, an interlaced PNG, a damaged file, or one past 40 megapixels, 65535 pixels a side or 256 MB of pixel data, is refused with one line that says what to do.
+It prints one line of JSON: the image's size, the file written and its size, the box as used, the rows and columns squeezed, and where `--edges` put its strips. With no option it prints the size and writes nothing. A full-HD screenshot takes about a second, and a 2560 x 1440 one whose every row uses the slowest PNG filter about two. A JPEG, an interlaced PNG, a damaged file, or one past 40 megapixels, 65535 pixels a side or 256 MB of pixel data, is refused with one line that says what to do.
 
 ## What it costs and touches
 
@@ -76,7 +77,7 @@ It prints one line of JSON: the image's size, the file written and its size, the
 - **What it prints is scrubbed.** Every line has the token masked, as is, percent-encoded, JSON-escaped or as HTML character references. So does the Basic value a personal access token goes as. The mask comes before any text is cut short, so a cut never leaves part of a token standing. An error body in UTF-16 is decoded first. A token encoded twice, or split into pieces, is not masked.
 - **An image is named by its file name alone**, looked up in the images folder; a path, a drive such as `C:shot.png`, or any colon is refused.
 - **Editing leaves the earlier images attached**, unreferenced; Azure DevOps keeps a comment's attachments.
-- **`crop.py` reads one PNG and writes one**, beside it or at `--out`, never over its input, and reaches no network. A squeeze keeps only rows and columns of the input, in their order, and drops one only when it is identical to the one before it: nothing is blended, drawn or moved. A uniform area whose size carries meaning, such as a bar in a chart, shrinks like blank space, so charts are not squeezed. A 16-bit sample keeps its high byte; the colour chunks are carried over and the text, time and EXIF chunks are not.
+- **`crop.py` reads one PNG and writes one**, beside it or at `--out`, never over its input, and reaches no network. `--edges` writes two strips of the image into a fresh folder in the system's temporary folder, and leaves them there. A squeeze keeps only rows and columns of the input, in their order, and drops one only when it is identical to the one before it: nothing is blended, drawn or moved. A uniform area whose size carries meaning, such as a bar in a chart, shrinks like blank space, so charts are not squeezed. A 16-bit sample keeps its high byte; the colour chunks are carried over and the text, time and EXIF chunks are not.
 
 ## Dependencies
 
