@@ -25,7 +25,10 @@ line of JSON with the result. The source script sends the request; nothing secre
 
 In Git Bash on Windows, run it with MSYS_NO_PATHCONV=1 set, or write the path with a doubled leading slash
 (GET //api/widgets/42, read as /api/widgets/42): the shell otherwise rewrites /api/widgets/42 into a Windows path
-before this script runs, and the script stops rather than send that.
+before this script runs, and the script stops rather than send that. With MSYS_NO_PATHCONV=1 set, the shell
+converts no path at all, and Python takes /c/Users/... for a folder named c at the root of the current drive,
+where it finds no script. So write this script's path, and any other file path, as C:/Users/... instead. With the
+doubled slash, leave the variable unset, and the shell converts every file path as usual.
 """
 import argparse, json, os, re, shutil, subprocess, sys
 from pathlib import Path
