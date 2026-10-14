@@ -61,7 +61,7 @@ python3 skills/ado-evidence/scripts/crop.py shot.png --squeeze --out shots/query
 
 | Option | What it does |
 | --- | --- |
-| `--squeeze` | Closes up every run of identical rows, then of identical columns, longer than the gap to the gap. Every row and column that differs from its neighbour stays, so a blank editor, an empty results pane and the space between a status bar's two ends go, and nothing else. A full-screen SQL Server Management Studio window comes down to the query, the results and the status bar, with the server details beside "Query executed successfully". |
+| `--squeeze` | Closes up every run of identical rows, then of identical columns, longer than the gap to the gap. Every row and column that differs from its neighbour stays, so a blank editor, an empty results pane and the space between a status bar's two ends go, and nothing else. A full-screen SQL Server Management Studio window comes down to its tab strip, the query, the results and the status bar, with the server details beside "Query executed successfully". Chrome such as the tab strip differs from its neighbours, so it stays, and it can show other tabs' titles; `--box` from below it, in the same run, takes it off and lets the blank columns under it close too. |
 | `--gap N` | The pixels a squeezed run keeps; 16 by default. |
 | `--box LEFT,TOP,RIGHT,BOTTOM` | Keeps the region from LEFT,TOP up to but not including RIGHT,BOTTOM, clamped to the image. With `--squeeze`, the box is cut first. |
 | `--grid` | Writes `shot-grid.png`, the image ruled every 100 pixels and labelled with its coordinates, to read a box's edges from. On its own. |

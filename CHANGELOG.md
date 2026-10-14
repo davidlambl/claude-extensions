@@ -160,6 +160,11 @@ In the docs:
 
 Split out of api-shots, so that where the records and images go is the user's choice.
 
+### 0.1.8 — 2026-10-14
+
+- SKILL.md says that a squeeze keeps window chrome such as a tab strip, which can show other tabs' titles and holds open the blank columns beneath it. When chrome remains, the session boxes it off from the original in the same run as the squeeze, with the edge read from the original's grid. On a real SSMS window on Windows that took the result from 1508 x 269 to 1236 x 243, without the other tabs' server names.
+- The README's SSMS example says the same.
+
 ### 0.1.7 — 2026-10-13
 
 - `crop.py` cuts a PNG screenshot down before it is posted, with the standard library alone. `--squeeze` closes up every run of identical rows, then of identical columns, longer than `--gap` (16 pixels) to the gap, so a full-screen window comes down to its content with every row and column that differs from its neighbour kept; `--box LEFT,TOP,RIGHT,BOTTOM` keeps one region; `--grid` writes a copy ruled every 100 pixels, to read a box from. It writes beside the input or at `--out`, never over the input, and replaces a file `--out` names only with `--overwrite`. It prints one line of JSON with the sizes, the box as used and what was squeezed.
