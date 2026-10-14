@@ -410,7 +410,7 @@ function Get-Composed([string]$name) {
 
 # A name is matched exactly: ordinal, once both are composed (see Get-Composed), so that letter case and every other
 # character count. -eq and -ceq compare strings as the invariant culture does, which reads a zero-width space or a soft
-# hyphen as nothing and a no-break space as a space, and -eq ignores letter case too. Either could choose a name the
+# hyphen as nothing; -eq also ignores letter case and reads a no-break space as a space. Either could choose a name the
 # user did not give, and a name that differs from the one meant only in letter case may be another environment, such
 # as production. As the Postman source's same_name.
 function Test-SameName($name, [string]$wanted) {
