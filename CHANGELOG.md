@@ -160,6 +160,10 @@ In the docs:
 
 Split out of api-shots, so that where the records and images go is the user's choice.
 
+### 0.1.10 — 2026-10-14
+
+- SKILL.md says which edges of the check's strips to judge for clipping: the result's own, the top of the top strip and the bottom of the bottom strip. A line sliced where a strip itself was cut is the strip's cut, so a correct edge is not moved for it. On the real SSMS capture on Windows, the bottom strip of a correct result began with a column header sliced in half.
+
 ### 0.1.9 — 2026-10-14
 
 - SKILL.md says how to check a box's edge, since the grid rules only every 100 pixels and a thin strip of chrome falls between its rules. The session cuts the top and bottom 80 pixels of the result into scratch files, outside the evidence folder, and looks at them at full size, judging only whether chrome is still visible and whether the first or last line of content is clipped, and moves the edge and runs again from the original if so. A result a little wider than it could be is left alone.

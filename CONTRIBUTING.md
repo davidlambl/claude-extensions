@@ -88,13 +88,13 @@ python3 tools/evals-lint.py                                     # every eval sui
 Each skill plugin has an `evals/` suite that tests whether the skill fires when it should, stays quiet when it shouldn't, and holds to its own rules. `claude plugin eval` runs each case with the plugin loaded and again without it, so the score difference shows what the skill actually contributed.
 
 ```sh
-claude plugin eval skills/api-call --trust-plugin --no-publish --max-cost-usd 10
+claude plugin eval skills/api-call --judge-model sonnet --trust-plugin --no-publish --max-cost-usd 10
 ```
 
 **A run costs real money.** Every case starts a full Claude session on your own credentials and bills against your plan. One case, run once, with no baseline arm, came to between five and thirty cents. The default is three runs per case in each of two arms, so a whole suite is roughly twelve times that. While writing a case, keep it cheap:
 
 ```sh
-claude plugin eval skills/ado-evidence --case post-the-evidence --runs 1 --ablation none   --trust-plugin --no-publish --max-cost-usd 1
+claude plugin eval skills/ado-evidence --case post-the-evidence --runs 1 --ablation none --judge-model sonnet --trust-plugin --no-publish --max-cost-usd 1
 ```
 
 That cost is why the evals are not in the CI workflow, which would also need a credential the repository doesn't have. Run them by hand when you change a skill's description or its rules.
@@ -102,6 +102,8 @@ That cost is why the evals are not in the CI workflow, which would also need a c
 Checking that a suite would load costs nothing, and CI does it: `python3 tools/evals-lint.py` reads every case as the loader would and fails on an unknown grader type or option, a missing option, a value out of range, or a `pattern` or `input_match` that does not compile as a JavaScript regex. A grader can also carry examples, in `<case>/examples/<grader>.json`, which the lint checks with node: for a `regex` grader `{"pass": [...], "fail": [...]}`, replies it must pass and must fail; for a `tool_used` grader `{"match": [...], "no_match": [...]}`, tool inputs its `input_match` must and must not match. Write some whenever you write or change a regex; a pattern that vetoes a correct reply fails a whole run.
 
 When a case fails, read the grader's evidence in `evals/results/<timestamp>/aggregate-result.json` before you change the skill. A judge grader can mark a correct answer wrong because the reply is shaped differently from the rubric, and the first failure here was exactly that. Results are gitignored.
+
+**Judge with Sonnet.** Pass `--judge-model sonnet` on every run, as the commands above do. A grader cannot choose its own judge, and the default is Haiku. Haiku failed correct replies in ado-evidence's `cut-the-window-down` case in three of nine runs, which reads as a regression that isn't there. Sonnet passed every vote of the same case, for about three cents more a run.
 
 ## Screenshots
 
