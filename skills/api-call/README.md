@@ -63,6 +63,8 @@ Install it from a Claude Code prompt in a terminal:
 
 Answer `y` to add the marketplace, then choose a scope.
 
+In auto mode, Claude Code's classifier can stop these scripts with `[Code from External]`. [Auto mode](../../README.md#auto-mode) in the repository's README says why, and how to let them run.
+
 Requirements: Python 3.11 or later; for Insomnia, the app's data on this machine and PowerShell 7 (`pwsh`); for Postman, an environment export and a collection export; for `--shot`, Chrome, Chromium or Edge, found where each installs on Windows and macOS or on the `PATH`. Set `CHROME` to the browser's path otherwise. Built and tested on Windows and macOS; Linux is in place but untested.
 
 ```sh
