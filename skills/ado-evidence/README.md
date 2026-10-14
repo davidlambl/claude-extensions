@@ -65,9 +65,9 @@ python3 skills/ado-evidence/scripts/crop.py shot.png --squeeze --out shots/query
 | `--gap N` | The pixels a squeezed run keeps; 16 by default. |
 | `--box LEFT,TOP,RIGHT,BOTTOM` | Keeps the region from LEFT,TOP up to but not including RIGHT,BOTTOM, clamped to the image. With `--squeeze`, the box is cut first. |
 | `--grid` | Writes `shot-grid.png`, the image ruled every 100 pixels and labelled with its coordinates, to read a box's edges from. On its own. |
-| `--out FILE` | Where the result goes; `shot-cropped.png` beside the input otherwise. A file that exists is replaced only with `--overwrite`; the input never. |
+| `--out FILE` | Where the result goes; `shot-cropped.png` beside the input otherwise. A file `--out` names that exists is replaced only with `--overwrite`; the default name is the script's own to replace, and the input never. |
 
-It prints one line of JSON: the image's size, the file written and its size, the box as used, and the rows and columns squeezed. With no option it prints the size and writes nothing. A full-HD screenshot takes about a second, and a 2560 x 1440 one whose every row uses the slowest PNG filter about two. A JPEG, an interlaced PNG, a damaged file, or one past 40 megapixels or 256 MB of pixel data, is refused with one line that says what to do.
+It prints one line of JSON: the image's size, the file written and its size, the box as used, and the rows and columns squeezed. With no option it prints the size and writes nothing. A full-HD screenshot takes about a second, and a 2560 x 1440 one whose every row uses the slowest PNG filter about two. A JPEG, an interlaced PNG, a damaged file, or one past 40 megapixels, 65535 pixels a side or 256 MB of pixel data, is refused with one line that says what to do.
 
 ## What it costs and touches
 

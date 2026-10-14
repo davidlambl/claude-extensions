@@ -349,13 +349,52 @@ class Refuses(unittest.TestCase):
         self.assertIn("larger than", message)
         # A 1-bit image packs 32 pixels into the bytes one RGBA pixel takes: the cap is on what decoding makes of it.
         started = time.monotonic()
-        message = self.refusal(png([[(0,)] * 8] * 2, 0, 1, size=(65536, 32000)))
+        message = self.refusal(png([[(0,)] * 8] * 2, 0, 1, size=(65535, 32000)))
         self.assertLess(time.monotonic() - started, 1)
-        self.assertIn("65536 x 32000", message)
+        self.assertIn("65535 x 32000", message)
         self.assertIn("megapixels", message)
         with self.assertRaises(crop.Problem):
             crop.header(struct.pack(">IIBBBBB", 8000, 6000, 8, 2, 0, 0, 0))  # 48 megapixels of RGB
         crop.header(struct.pack(">IIBBBBB", 7680, 4320, 8, 6, 0, 0, 0))  # 8K is read
+        crop.header(struct.pack(">IIBBBBB", 1200, 30000, 8, 6, 0, 0, 0))  # and a full-page capture of a long page
+        # Each row and each column costs memory of its own, so a side is capped too: 1 x 40,000,000 is inside the
+        # pixel cap and cost gigabytes.
+        for width, height in ((1, 40_000_000), (40_000_000, 1), (65536, 600), (600, 65536)):
+            with self.subTest(size=(width, height)), self.assertRaises(crop.Problem) as caught:
+                crop.header(struct.pack(">IIBBBBB", width, height, 1, 0, 0, 0, 0))
+            self.assertIn("65535", str(caught.exception))
+        crop.header(struct.pack(">IIBBBBB", 65535, 600, 1, 0, 0, 0, 0))
+
+    def test_chunks_cost_nothing_past_the_ones_an_image_needs(self):
+        # A 1 x 1 image followed by 200,000 empty tEXt chunks and 200,000 gAMA chunks: none of them is kept, and only
+        # the first gAMA reaches the output. Past a million chunks the file is refused, which no image needs.
+        pixels = [[(1, 2, 3, 255)]]
+        spam = chunk(b"tEXt", b"") * 200_000 + chunk(b"gAMA", struct.pack(">I", 45455)) + chunk(b"gAMA", struct.pack(">I", 1)) * 200_000
+        data = png(pixels)
+        data = data[:-12] + spam + data[-12:]  # before IEND
+        with tempfile.TemporaryDirectory() as tmp:
+            source = written(Path(tmp) / "spam.png", data)
+            tracemalloc.start()
+            try:
+                image = crop.read_png(source)
+                _, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+            self.assertEqual(image.rows, rgba_of(pixels, 6, 8))
+            self.assertEqual(image.extras, [(b"gAMA", struct.pack(">I", 45455))])
+            self.assertLess(peak, 4 * len(data))
+            too_many = png(pixels)
+            too_many = too_many[:-12] + chunk(b"tEXt", b"") * (crop.CHUNKS + 1) + too_many[-12:]
+            with self.assertRaises(crop.Problem) as caught:
+                crop.read_png(written(Path(tmp) / "more.png", too_many))
+            self.assertIn("chunks", str(caught.exception))
+        # IDAT in many pieces is still one stream
+        rows = [pack_row([s for px in row for s in px], 8) for row in sample_rows(13, 5, 6, 8, random.Random(17))]
+        stream = zlib.compress(filtered(rows, 4, 0))
+        pieces = b"".join(chunk(b"IDAT", stream[i:i + 7]) for i in range(0, len(stream), 7))
+        many = SIGNATURE + chunk(b"IHDR", struct.pack(">IIBBBBB", 13, 5, 8, 6, 0, 0, 0)) + pieces + chunk(b"IEND", b"")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(len(crop.read_png(written(Path(tmp) / "pieces.png", many)).rows), 5)
 
     def test_refuses_a_file_past_the_limit_without_reading_it_all(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(crop, "LIMIT", 100_000):
@@ -706,6 +745,10 @@ class Grid(unittest.TestCase):
             self.assertEqual(crop.scale_for(width), scale, width)
             label = crop.rendered(str(((width - 1) // 100) * 100), scale)  # the widest label, at the last rule
             self.assertLessEqual(scale + len(label[0]), 100)
+        # a tall image's left-edge labels have a digit more: they must not reach the first rule either
+        self.assertEqual(crop.scale_for(2500, 400), 5)
+        self.assertEqual(crop.scale_for(2500, 10100), 4)
+        self.assertLessEqual(4 + len(crop.rendered("10000", 4)[0]), 100)
 
     def test_labels_stay_apart_on_wide_images(self):
         for width in (2560, 3840, 5120):
