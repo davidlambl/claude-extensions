@@ -60,13 +60,13 @@ Keep `"$defaults"` in the list: without it, the list replaces the built-in allow
 {
   "permissions": {
     "allow": [
-      "Bash(python3 /Users/you/.claude/plugins/cache/davidlambl/api-call/0.2.9/skills/api-call/scripts/call.py *)"
+      "Bash(python3 /Users/you/.claude/plugins/cache/davidlambl/api-call/0.2.10/skills/api-call/scripts/call.py *)"
     ]
   }
 }
 ```
 
-A rule matches the command as Claude writes it, quotes included, so copy yours from the stopped command and put `*` in place of the arguments alone. Write your version where this says `0.2.9`, and change it after each update: until you do, the classifier reviews the new copy. A command that starts another way, such as with `MSYS_NO_PATHCONV=1` in front on Windows, needs a rule of its own. So does a call from the PowerShell tool, as `PowerShell(...)`, since a `Bash(...)` rule never matches it.
+A rule matches the command as Claude writes it, quotes included, so copy yours from the stopped command and put `*` in place of the arguments alone. Write your version where this says `0.2.10`, and change it after each update: until you do, the classifier reviews the new copy. A command that starts another way, such as with `MSYS_NO_PATHCONV=1` in front on Windows, needs a rule of its own. So does a call from the PowerShell tool, as `PowerShell(...)`, since a `Bash(...)` rule never matches it.
 
 Never put `*` in place of the version. A `*` matches any text, spaces and `..` included, so that rule would let Claude run any Python file on your machine with no review, as `Bash(python3 *)` would. Auto mode drops `Bash(python3 *)`, but keeps that one. It also drops a rule with a flag after `python3`, such as `python3 -I`, so for a command Claude writes that way, use one of the ways above. Write no rule for ado-evidence's `post.py`: it would let Claude post to Azure DevOps as you with no review.
 
