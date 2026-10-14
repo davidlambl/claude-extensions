@@ -12,6 +12,20 @@ Uploads images as work item attachments and adds, or edits, a markdown comment t
 - Python 3, and the Azure CLI signed in (`az login`), or `AZURE_DEVOPS_TOKEN` holding either a Microsoft Entra access token or a personal access token. `post.py` tells them apart by shape: an Entra token is a JWT and goes as Bearer, and anything else goes as Basic with an empty user name.
 - The org as `https://dev.azure.com/<org>` or `https://<org>.visualstudio.com`, the project, the work item id, and the images, usually from the api-call skill.
 
+## Prepare the images
+
+An image is posted as the user gave it, unless it shows more than the evidence: a whole window, or blank space around what matters. Then `scripts/crop.py` under this skill's base directory cuts it down. It reads one PNG and writes another, never over the input, with no imaging library:
+
+```sh
+python3 <base>/scripts/crop.py <shot>.png --squeeze --out <dir>/<name>.png
+```
+
+- `--squeeze` closes up every run of identical rows, then of identical columns, longer than 16 pixels (`--gap` sets it) to that many. Every row and column that differs from its neighbour stays, so a blank editor, an empty pane or the space between a status bar's two ends goes, and nothing else. Never squeeze a chart, a progress bar, a gauge or anything whose size carries its meaning: a uniform area shrinks like blank space.
+- `--box LEFT,TOP,RIGHT,BOTTOM` keeps one region, in pixels, RIGHT and BOTTOM not included; with `--squeeze`, the box is cut first. `--grid` writes `<shot>-grid.png`, the image ruled every 100 pixels and labelled with its coordinates, to read the edges from, since the image you see is scaled down.
+- `--out` puts the result in the evidence folder, beside the comment. The script prints one line of JSON with the sizes, the box as used and the rows and columns squeezed. A file `--out` names that exists is replaced only with `--overwrite`.
+- Look at the result before using it. When the squeezed counts are not zero, the caption says that blank space was closed up.
+- A JPEG, an interlaced PNG or any other refusal means post the image as given and tell the user why. Never crop another way.
+
 ## Post
 
 1. Write the comment in markdown: one intro line (environment, build or deploy, what the codes mean), then for each image a bold caption directly above it, with `{{image:<file>.png}}` where the image goes. An image is named by its file name alone and looked up in `--images`, or in the comment's own folder.
@@ -29,4 +43,5 @@ Uploads images as work item attachments and adds, or edits, a markdown comment t
 
 - Only the main session posts or edits. A subagent may prepare the comment, never post it.
 - Never post without the user's approval of the exact text, and never post an image the user has not seen.
+- An image is posted as the user gave it or as `crop.py` cut it; nothing else edits one.
 - The token is sent to Azure DevOps and nowhere else; the script refuses any other `--org`, and an attachment URL outside its organization.

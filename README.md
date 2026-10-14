@@ -8,7 +8,7 @@ Mods and skills for [Claude Code](https://claude.com/claude-code), each packaged
 | --- | --- | --- |
 | [context-bar](mods/context-bar/) | mod | Your context window as a meter above the prompt: the conversation, the overhead every request carries, and the room left before compaction, with a drill-down into the overhead. `/context-bar` shows or hides it. |
 | [api-call](skills/api-call/) | skill | Calls an API the way your Insomnia or Postman collection would, with its environment, auth and client certificate, records the exchange with every secret masked, and screenshots it on request. |
-| [ado-evidence](skills/ado-evidence/) | skill | Posts images with captions as a comment on an Azure DevOps work item, or revises one, and checks that each image rendered. |
+| [ado-evidence](skills/ado-evidence/) | skill | Posts images with captions as a comment on an Azure DevOps work item, or revises one, and checks that each image rendered. Cuts a screenshot down first, with no imaging library. |
 
 ## Install
 
