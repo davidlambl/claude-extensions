@@ -329,6 +329,162 @@ class Build(unittest.TestCase):
         self.assertTrue(b["url"].endswith("api+key=FAKE-key-4b8d2e61%0A"))
 
 
+def esc(ch):
+    """ch as a message shows it in a name: a backslash, then u and four hex digits, or U and eight past the BMP."""
+    cp = ord(ch)
+    return "\\" + (f"u{cp:04x}" if cp <= 0xFFFF else f"U{cp:08x}")
+
+
+NBSP, ZWSP, RLO, CR, LF = chr(0xA0), chr(0x200B), chr(0x202E), chr(13), chr(10)
+ACUTE, E_ACUTE = chr(0x301), chr(0xE9)  # a combining acute accent, and é as one character
+UNSEEN_ONLY = "only in letter case or in characters shown as escapes"
+
+
+class NearNames(unittest.TestCase):
+    """Issue 5, as in the Insomnia source: --folder names a top-level folder exactly, in its own letter case. When none
+    has the name, the message names those that differ from it only in letter case, or else only in letter case or in
+    characters it shows as escapes, or else the closest, each quoted with every unseen character escaped, on one line,
+    and never chooses one."""
+
+    FOLDERS = [folder("Reports", BEARER), folder("Admin", APIKEY_HEADER), folder("Public", NOAUTH)]
+
+    def problem(self, name, folders=None):
+        with self.assertRaises(postman.Problem) as cm:
+            postman.pick_folder(collection(folders=self.FOLDERS if folders is None else folders), name)
+        return str(cm.exception)
+
+    def run_folder(self, folders, wanted, extra, environment=ENV):
+        """main() on a collection of folders with these names, --folder wanted and extra as the --vars file: (exit
+        code, stdout, stderr)."""
+        with tempfile.TemporaryDirectory() as root:
+            env, col, more = Path(root) / "env.json", Path(root) / "col.json", Path(root) / "vars.json"
+            env.write_text(json.dumps(environment), encoding="utf-8")
+            col.write_text(json.dumps(collection(folders=[folder(n) for n in folders])), encoding="utf-8")
+            more.write_text(json.dumps(extra), encoding="utf-8")
+            return run_main(["--env", str(env), "--collection", str(col), "--vars", str(more), "--folder", wanted,
+                             "--path", "/x"])
+
+    def test_a_folder_in_another_letter_case_is_named_and_never_chosen(self):
+        self.assertEqual(self.problem("reports"), "expected one top-level folder 'reports', found 0; names are "
+                                                  "case-sensitive, and 'Reports' differs only in letter case")
+        both = [folder("Reports", BEARER), folder("REPORTS", APIKEY_HEADER)]
+        self.assertEqual(postman.pick_folder(collection(folders=both), "REPORTS")["auth"], APIKEY_HEADER)
+        self.assertEqual(self.problem("reports", both), "expected one top-level folder 'reports', found 0; names are "
+                                                        "case-sensitive, and 'REPORTS' and 'Reports' differ only in letter case")
+
+    def test_only_the_closest_folders_are_named_and_far_ones_are_not(self):
+        self.assertEqual(self.problem("Reprots"), "expected one top-level folder 'Reprots', found 0; the closest name is 'Reports'")
+        folders = [folder(n) for n in ("Reports v2", "Reports v3", "Reports", "Imports v2")]
+        # 'Reports v2' is one edit from 'Repotrs v2' and 'Reports v3' two, so only the first is named.
+        self.assertEqual(self.problem("Repotrs v2", folders), "expected one top-level folder 'Repotrs v2', found 0; the "
+                                                              "closest name is 'Reports v2'")
+        self.assertEqual(self.problem("Reports v", folders), "expected one top-level folder 'Reports v', found 0; the "
+                                                             "closest names are 'Reports v2' and 'Reports v3'")
+        self.assertEqual(self.problem("Billing"), "expected one top-level folder 'Billing', found 0")
+
+    def test_of_stage_names_that_share_a_prefix_only_the_nearest_is_named(self):
+        # Up to three edits are allowed in a name this long, which is enough to turn one short stage name into another:
+        # 'Tset' named 'Dev' and 'UAT' too, beside the 'Test' it was a typo of.
+        stages = [folder("Contoso API - " + s) for s in ("Dev", "Test", "Prod", "UAT", "Staging", "Test v2")]
+        for wanted, nearest in (("Contoso API - Tset", "Test"), ("Contoso Api - Prd", "Prod"), ("Contoso API - Dev2", "Dev")):
+            with self.subTest(wanted):
+                self.assertEqual(self.problem(wanted, stages), f"expected one top-level folder '{wanted}', found 0; the "
+                                                               f"closest name is 'Contoso API - {nearest}'")
+
+    def test_a_folder_that_differs_only_in_unseen_characters_is_named_however_many_there_are(self):
+        # Each such character counted as an edit, so with more of them than one for every five characters, no folder
+        # was named at all.
+        folders = [folder("My" + NBSP + "API" + NBSP + "-" + NBSP + "Test"), folder("D" + ZWSP + "e" + ZWSP + "v"),
+                   folder("Team API" + CR + LF), folder("Reports")]
+        for wanted, shown in (("My API - Test", "'My" + esc(NBSP) + "API" + esc(NBSP) + "-" + esc(NBSP) + "Test'"),
+                              ("DEV", "'D" + esc(ZWSP) + "e" + esc(ZWSP) + "v'"),
+                              ("Team API", "'Team API" + esc(CR) + esc(LF) + "'")):
+            with self.subTest(wanted):
+                self.assertEqual(self.problem(wanted, folders), f"expected one top-level folder '{wanted}', found 0; "
+                                                                f"names are matched exactly, and {shown} differs {UNSEEN_ONLY}")
+
+    def test_a_folder_named_with_a_decomposed_accent_is_the_same_name_typed_composed(self):
+        # macOS can write é as an e and a combining accent. That is the same text as é written as one character, so
+        # each finds the other; two folders that are the same text are two found, and neither is chosen.
+        decomposed, composed = "Re" + ACUTE + "sume" + ACUTE, "R" + E_ACUTE + "sum" + E_ACUTE
+        for stored, typed in ((decomposed, composed), (composed, decomposed)):
+            with self.subTest(stored=stored):
+                found = postman.pick_folder(collection(folders=[folder("Reports"), folder(stored, BEARER)]), typed)
+                self.assertEqual(found["name"], stored)
+        self.assertEqual(self.problem(composed, [folder(decomposed), folder(composed)]),
+                         f"expected one top-level folder '{composed}', found 2")
+
+    def test_a_secret_in_a_folder_name_is_masked_before_the_name_is_escaped_or_cut(self):
+        # Every --vars value is a secret. The names in the message were escaped and cut before main() masked it, so a
+        # secret over 80 characters showed its first 80, and one holding a ' showed whole with the quote escaped:
+        # neither is a form the mask looks for.
+        token, password = "FAKE-tok-" + "7f3a9c2e" * 12, "it's-FAKE-pw-7f3a9c2e"
+        cases = {"a long secret typed": ("token", token, ["Reports"], token,
+                                         "expected one top-level folder '********', found 0"),
+                 "a long secret in both names": ("token", token, ["Admin " + token], "admin " + token,
+                                                 "expected one top-level folder 'admin ********', found 0; names are "
+                                                 "case-sensitive, and 'Admin ********' differs only in letter case"),
+                 "a quoted secret typed": ("pw", password, ["Reports"], password,
+                                           "expected one top-level folder '********', found 0"),
+                 "a quoted secret in both names": ("pw", password, ["Team " + password], "team " + password,
+                                                   "expected one top-level folder 'team ********', found 0; names are "
+                                                   "case-sensitive, and 'Team ********' differs only in letter case")}
+        for label, (key, secret, folders, wanted, message) in cases.items():
+            with self.subTest(label):
+                code, out, err = self.run_folder(folders, wanted, {key: secret})
+                self.assertEqual((code, out, err), (1, "", message))
+                self.assertEqual([secret[i:i + 6] for i in range(len(secret) - 5) if secret[i:i + 6] in err], [], err)
+        # A secret is matched in its own letter case, so the name typed in another shows; the folder named with the
+        # secret itself does not.
+        code, out, err = self.run_folder([password], password.upper(), {"pw": password})
+        self.assertEqual(err, "expected one top-level folder 'IT\\'S-FAKE-PW-7F3A9C2E', found 0; names are "
+                              "case-sensitive, and '********' differs only in letter case")
+        # The base URL's password is a secret too, though the mask main() lays over an error never knew it.
+        environment = {**ENV, "values": [{"key": "baseUrl", "value": "https://amy:FAKE-urlpw-7f3a9c2e@api.example.com",
+                                          "enabled": True}]}
+        code, out, err = self.run_folder(["Admin FAKE-urlpw-7f3a9c2e"], "admin FAKE-urlpw-7f3a9c2e", {}, environment)
+        self.assertEqual(err, "expected one top-level folder 'admin ********', found 0; names are case-sensitive, and "
+                              "'Admin ********' differs only in letter case")
+
+    def test_a_name_is_quoted_with_every_unseen_character_escaped_and_cut(self):
+        cases = {"plain": ("Reports", "'Reports'"),
+                 "letters and symbols as they are": ("Café ✓ Ünï", "'Café ✓ Ünï'"),
+                 "a quote and a backslash": ("Bob's C:\\API", "'Bob\\'s C:\\\\API'"),
+                 "line breaks": ("a" + CR + LF + "b" + chr(0x2028) + "c", "'a" + esc(CR) + esc(LF) + "b" + esc(chr(0x2028)) + "c'"),
+                 "bidi and format": ("ab" + RLO + "cd" + chr(0x200B) + chr(0x2066), "'ab" + esc(RLO) + "cd" + esc(chr(0x200B)) + esc(chr(0x2066)) + "'"),
+                 "spaces that are not U+0020": ("a" + NBSP + "b" + chr(0x3000), "'a" + esc(NBSP) + "b" + esc(chr(0x3000)) + "'"),
+                 "blank letters and symbols": ("a" + chr(0x3164) + chr(0x2800) + chr(0xFFFC), "'a" + esc(chr(0x3164)) + esc(chr(0x2800)) + esc(chr(0xFFFC)) + "'"),
+                 "a tag past the BMP": ("a" + chr(0xE0041), "'a" + esc(chr(0xE0041)) + "'"),
+                 "a lone surrogate": ("a" + chr(0xD800), "'a" + esc(chr(0xD800)) + "'"),
+                 "an emoji as it is": ("a" + chr(0x1F600), "'a" + chr(0x1F600) + "'"),
+                 "cut at 80": ("n" * 81, "'" + "n" * 80 + "'..."),
+                 "80 kept whole": ("n" * 80, "'" + "n" * 80 + "'"),
+                 "an escape is never split": ("n" * 78 + NBSP, "'" + "n" * 78 + "'...")}
+        for label, (name, shown) in cases.items():
+            with self.subTest(label):
+                self.assertEqual(postman.shown_name(name), shown)
+
+    def test_more_than_three_are_counted_and_closeness_is_looked_for_among_a_thousand_names_at_most(self):
+        self.assertEqual(postman.name_hint("TeAm", ["team", "TEAM", "Team", "tEAM", "Other"]),
+                         "; names are case-sensitive, and 'TEAM', 'Team', 'tEAM' and 1 more differ only in letter case")
+        names = [f"name {i}" for i in range(999)] + ["Target"]
+        self.assertEqual(postman.name_hint("Targat", names), "; the closest name is 'Target'")
+        self.assertEqual(postman.name_hint("Targat", names + ["one more"]), "")
+        self.assertEqual(postman.name_hint("TARGET", names + ["one more"]),
+                         "; names are case-sensitive, and 'Target' differs only in letter case")
+
+    def test_the_message_reaches_stderr_on_one_line(self):
+        with tempfile.TemporaryDirectory() as root:
+            env, col = Path(root) / "env.json", Path(root) / "col.json"
+            env.write_text(json.dumps(ENV), encoding="utf-8")
+            col.write_text(json.dumps(collection(folders=[folder("Team" + NBSP + "API"), folder("Team API" + CR + LF)])),
+                           encoding="utf-8")
+            code, out, err = run_main(["--env", str(env), "--collection", str(col), "--folder", "Team API", "--path", "/x"])
+        self.assertEqual((code, out), (1, ""), err)
+        self.assertEqual(err, "expected one top-level folder 'Team API', found 0; names are matched exactly, and 'Team API"
+                         + esc(CR) + esc(LF) + "' and 'Team" + esc(NBSP) + f"API' differ {UNSEEN_ONLY}")
+
+
 class Exposed(unittest.TestCase):
     RECORD = {"url": "https://api.example.com/items", "auth": "none", "request_headers": {"Accept": "application/json"},
               "response_headers": {}, "body": "ok"}

@@ -8,6 +8,10 @@ Reads Insomnia's local data, read-only:
   - the collection named -Collection for the auth on its top-level folder (API key or bearer), that folder's own
     environment, which Insomnia lays over the global one, that folder's headers, and the client certificate the
     collection holds for the request's host
+Each is chosen by its exact name, compared ordinal once both are composed (NFC), so that letter case and every character
+count, and so is a folder named with -Folder. When none has the name, the error names those that differ from it only in
+letter case, else only in letter case or in characters it shows as escapes, else the closest: three at most. It never
+chooses one.
 
 Secrets stay in this process. A secret is a value in a credential position: the API key's value (in a header, a query
 parameter or a cookie), the bearer token, a header value the folder templates (save for the standard headers that
@@ -396,11 +400,200 @@ function Add-Layer($layer) {
     }
 }
 
+# A name in Unicode's composed form (NFC), so that a name stored decomposed, as macOS can write an accent (an e and a
+# combining acute), is the same text as one typed composed (U+00E9), as -eq read the two. .NET will not compose a name
+# that holds a lone surrogate or U+FFFE, which stays as it is. As the Postman source's composed.
+function Get-Composed([string]$name) {
+    if ([regex]::IsMatch($name, '[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|\uFFFE')) { return $name }
+    try { return $name.Normalize() } catch { return $name }
+}
+
+# A name is matched exactly: ordinal, once both are composed (see Get-Composed), so that letter case and every other
+# character count. -eq and -ceq compare strings as the invariant culture does, which reads a zero-width space or a soft
+# hyphen as nothing; -eq also ignores letter case and reads a no-break space as a space. Either could choose a name the
+# user did not give, and a name that differs from the one meant only in letter case may be another environment, such
+# as production. As the Postman source's same_name.
+function Test-SameName($name, [string]$wanted) {
+    return [string]::Equals((Get-Composed ([string]$name)), (Get-Composed $wanted), [StringComparison]::Ordinal)
+}
+
+# A name composed (see Get-Composed) and folded to compare in any letter case: ordinal, and the same in every culture.
+function Get-Folded([string]$name) { return (Get-Composed $name).ToUpperInvariant().ToLowerInvariant() }
+
+# Whether a code point shows as its escape in a name (see Format-Name): a control or format character, the bidi marks
+# among them, a line or paragraph separator, a space other than U+0020, a lone surrogate, an unassigned code point, the
+# other default-ignorable ones, which draw nothing, and the blank Braille pattern and the object replacement character,
+# which draw as a space. render.py draws the same as escapes in a body, save a tab and a variation selector after a
+# symbol. Get-Skeleton's pattern lists the same code points in the Basic Multilingual Plane.
+function Test-Unseen([int]$cp) {
+    if ($cp -ge 0x20 -and $cp -le 0x7E) { return $false }
+    $category = [Globalization.CharUnicodeInfo]::GetUnicodeCategory($cp)
+    if ($category -in 'Control', 'Format', 'LineSeparator', 'ParagraphSeparator', 'SpaceSeparator', 'Surrogate', 'OtherNotAssigned') { return $true }
+    foreach ($r in (0x034F, 0x034F), (0x115F, 0x1160), (0x17B4, 0x17B5), (0x180B, 0x180F), (0x2800, 0x2800), (0x3164, 0x3164),
+        (0xFE00, 0xFE0F), (0xFFA0, 0xFFA0), (0xFFFC, 0xFFFC), (0xE0100, 0xE01EF)) {
+        if ($cp -ge $r[0] -and $cp -le $r[1]) { return $true }
+    }
+    return $false
+}
+
+# A name as the near-miss search reads it (see Get-NameHint): each space other than U+0020 read as one, every other
+# character Test-Unseen names dropped, then composed and folded (see Get-Folded). Names with the same skeleton differ
+# only in letter case or in characters a message shows as escapes. A loop that calls Test-Unseen on every character is
+# slow in PowerShell, so in the Basic Multilingual Plane a pattern finds them: the categories Test-Unseen names save the
+# space separators, its list of code points, and a lone surrogate. Past the plane, where it names only a format
+# character, an unassigned code point and a variation selector from U+E0100 to U+E01EF, each run of surrogate pairs is
+# looked at in one call. As the Postman source's skeleton.
+function Get-Skeleton([string]$name) {
+    $kept = [regex]::Replace([regex]::Replace($name, '\p{Zs}', ' '),
+        '[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cn}\u034F\u115F\u1160\u17B4\u17B5\u180B-\u180F\u2800\u3164\uFE00-\uFE0F\uFFA0\uFFFC]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]', '')
+    $kept = [regex]::Replace($kept, '(?:[\uD800-\uDBFF][\uDC00-\uDFFF])+', {
+            param($m)
+            $format = [Globalization.UnicodeCategory]::Format; $unassigned = [Globalization.UnicodeCategory]::OtherNotAssigned
+            $run = [Text.StringBuilder]::new()
+            for ($i = 0; $i -lt $m.Value.Length; $i += 2) {
+                $cp = [char]::ConvertToUtf32($m.Value, $i)
+                $category = [Globalization.CharUnicodeInfo]::GetUnicodeCategory($cp)
+                if ($category -ne $format -and $category -ne $unassigned -and ($cp -lt 0xE0100 -or $cp -gt 0xE01EF)) { [void]$run.Append($m.Value, $i, 2) }
+            }
+            return $run.ToString()
+        })
+    return Get-Folded $kept
+}
+
+# A name as a message shows it: in single quotes, a ' or a \ in it escaped with a \, and each character Test-Unseen
+# names as its \u escape and four hex digits, or \U and eight past the Basic Multilingual Plane. A name that would show
+# more than 80 characters is cut before the first that does not fit, and ... follows its closing quote. Names come
+# from a shared data folder, so none can break the message's line, fake its quoting or make it long. As the Postman
+# source's shown_name.
+function Format-Name([string]$name) {
+    $shown = [Text.StringBuilder]::new()
+    $width = 0
+    for ($i = 0; $i -lt $name.Length; $i++) {
+        if ([char]::IsSurrogatePair($name, $i)) { $cp = [char]::ConvertToUtf32($name[$i], $name[$i + 1]); $text = $name.Substring($i, 2); $i++ }
+        else { $cp = [int]$name[$i]; $text = [string]$name[$i] }
+        if ($cp -eq 0x27 -or $cp -eq 0x5C) { $piece = '\' + $text; $used = 2 }
+        elseif (Test-Unseen $cp) { $piece = if ($cp -le 0xFFFF) { '\u{0:x4}' -f $cp } else { '\U{0:x8}' -f $cp }; $used = $piece.Length }
+        else { $piece = $text; $used = 1 }
+        if ($width + $used -gt 80) { return "'" + $shown.ToString() + "'..." }
+        [void]$shown.Append($piece)
+        $width += $used
+    }
+    return "'" + $shown.ToString() + "'"
+}
+
+# Names as a message lists them, each as Format-Name shows it: 'A', 'A' and 'B', or 'A', 'B' and 'C'; past three, the
+# first three and how many more.
+function Join-Names($names) {
+    $names = @($names)
+    $shown = @($names | Select-Object -First 3 | ForEach-Object { Format-Name $_ })
+    if ($names.Count -gt 3) { return ($shown -join ', ') + " and $($names.Count - 3) more" }
+    if ($shown.Count -eq 1) { return $shown[0] }
+    return ($shown[0..($shown.Count - 2)] -join ', ') + ' and ' + $shown[-1]
+}
+
+# How many edits apart names of lengths a and b may be and still count as close: one for every five characters of the
+# longer, one at least and three at most; none when the longer is under three characters.
+function Get-CloseEdits([int]$a, [int]$b) {
+    $longer = [Math]::Max($a, $b)
+    if ($longer -lt 3) { return 0 }
+    return [Math]::Min(3, [Math]::Max(1, [int][Math]::Floor($longer / 5)))
+}
+
+# How many single-character edits turn a into b (an insertion, a deletion, a substitution, or a swap of two
+# neighbours), or $most + 1 when that is more than $most. Only the cells within $most of the diagonal are worked out,
+# and the work stops once two rows running are past $most, since no way to the end can skip both. As the Postman
+# source's edits, with a character outside the Basic Multilingual Plane counted as its two UTF-16 halves.
+function Get-Edits([string]$a, [string]$b, [int]$most) {
+    $n = $a.Length; $m = $b.Length; $past = $most + 1
+    if ([Math]::Abs($n - $m) -gt $most) { return $past }
+    $x = [int[]]$a.ToCharArray(); $y = [int[]]$b.ToCharArray()
+    $before = $null
+    $row = [int[]]::new($m + 1)
+    for ($j = 0; $j -le $m; $j++) { $row[$j] = [Math]::Min($j, $past) }
+    for ($i = 1; $i -le $n; $i++) {
+        $new = [int[]]::new($m + 1)
+        [Array]::Fill($new, $past)
+        $new[0] = [Math]::Min($i, $past)
+        $last = [Math]::Min($m, $i + $most)
+        for ($j = [Math]::Max(1, $i - $most); $j -le $last; $j++) {
+            $d = $row[$j - 1]
+            if ($x[$i - 1] -ne $y[$j - 1]) { $d++ }
+            if ($row[$j] + 1 -lt $d) { $d = $row[$j] + 1 }
+            if ($new[$j - 1] + 1 -lt $d) { $d = $new[$j - 1] + 1 }
+            if ($i -gt 1 -and $j -gt 1 -and $x[$i - 1] -eq $y[$j - 2] -and $x[$i - 2] -eq $y[$j - 1] -and $before[$j - 2] + 1 -lt $d) { $d = $before[$j - 2] + 1 }
+            $new[$j] = [Math]::Min($d, $past)
+        }
+        if ([Linq.Enumerable]::Min($new) -gt $most -and [Linq.Enumerable]::Min($row) -gt $most) { return $past }
+        $before = $row; $row = $new
+    }
+    return $row[$m]
+}
+
+# What the message for a name that matched none adds about those that came near it, or nothing. In turn: the names that
+# differ from it only in letter case, compared folded (see Get-Folded); else those that differ only in letter case or
+# in characters a message shows as escapes, compared as skeletons (see Get-Skeleton); else the closest, the fewest
+# edits apart within a few (see Get-CloseEdits), compared as skeletons too. It lists three at most and counts the rest
+# (see Join-Names). Each is shown, never chosen: a name in another letter case may be another environment, such as
+# production. Names only, never a value. Among more than 1000 names, or for a name past 128 characters, only letter
+# case is looked at, and otherwise only names of 128 characters at most are, so a shared data folder cannot make the
+# search slow. As the Postman source's name_hint.
+function Get-NameHint([string]$wanted, $names) {
+    # Each name is composed once, here, and compared and folded inline as Test-SameName and Get-Folded do it: a shared
+    # data folder may hold many names, and a loop that calls functions on each is slow in PowerShell.
+    $want = Get-Composed $wanted
+    $folded = $want.ToUpperInvariant().ToLowerInvariant()
+    $composed = [Collections.Generic.SortedDictionary[string, string]]::new([StringComparer]::Ordinal)
+    foreach ($n in $names) { $n = [string]$n; if (-not $composed.ContainsKey($n)) { $composed[$n] = Get-Composed $n } }
+    $unique = [Collections.Generic.List[string]]::new()
+    $cased = [Collections.Generic.List[string]]::new()
+    foreach ($pair in $composed.GetEnumerator()) {
+        if ([string]::Equals($pair.Value, $want, [StringComparison]::Ordinal)) { continue }  # the name wanted itself
+        $unique.Add($pair.Key)
+        if ([string]::Equals($pair.Value.ToUpperInvariant().ToLowerInvariant(), $folded, [StringComparison]::Ordinal)) { $cased.Add($pair.Key) }
+    }
+    if ($cased.Count) { return "; names are case-sensitive, and $(Join-Names $cased) $(Get-Differ $cased) only in letter case" }
+    if ($unique.Count -gt 1000 -or $wanted.Length -gt 128) { return '' }
+    $near = @(foreach ($n in $unique) { if ($n.Length -le 128) { $n } })
+    $shape = Get-Skeleton $wanted
+    $shapes = @(foreach ($n in $near) { Get-Skeleton $n })
+    $sameShape = @(for ($i = 0; $i -lt $near.Count; $i++) { if ([string]::Equals($shapes[$i], $shape, [StringComparison]::Ordinal)) { $near[$i] } })
+    if ($sameShape.Count) {
+        return "; names are matched exactly, and $(Join-Names $sameShape) $(Get-Differ $sameShape) only in letter case or in characters shown as escapes"
+    }
+    $closest = [Collections.Generic.List[string]]::new()
+    $least = 4  # more edits than Get-CloseEdits ever allows
+    for ($i = 0; $i -lt $near.Count; $i++) {
+        # One further off than the closest yet is of no use, so the search stops sooner.
+        $most = [Math]::Min((Get-CloseEdits $shape.Length $shapes[$i].Length), $least)
+        if ($most -eq 0) { continue }
+        $d = Get-Edits $shape $shapes[$i] $most
+        if ($d -gt $most) { continue }
+        if ($d -lt $least) { $least = $d; $closest.Clear() }
+        $closest.Add($near[$i])
+    }
+    if (-not $closest.Count) { return '' }
+    return "; the closest $(if ($closest.Count -eq 1) { 'name is' } else { 'names are' }) $(Join-Names $closest)"
+}
+
+# The verb for names that differ from the one wanted: one differs, more differ.
+function Get-Differ($names) { return $(if (@($names).Count -eq 1) { 'differs' } else { 'differ' }) }
+
+# The message for a lookup that did not find exactly one: what was looked for, how many were found, and when none was,
+# the names that came near it (see Get-NameHint).
+function Get-LookupError([string]$what, [int]$found, [string]$wanted, $names) {
+    $text = "expected one $what, found $found"
+    if ($found -eq 0) { $text += Get-NameHint $wanted $names }
+    return $text
+}
+
 # The collection and the top-level folder whose auth, environment and headers apply.
 $workspaces = Read-InsomniaDb 'insomnia.Workspace.db'
 $environments = Read-InsomniaDb 'insomnia.Environment.db'
-$collectionDoc = @($workspaces.Values | Where-Object { $_['scope'] -eq 'collection' -and $_['name'] -eq $Collection })
-if ($collectionDoc.Count -ne 1) { throw "expected one Insomnia collection named '$Collection', found $($collectionDoc.Count)" }
+$collections = @($workspaces.Values | Where-Object { $_['scope'] -eq 'collection' })
+$collectionDoc = @($collections | Where-Object { Test-SameName $_['name'] $Collection })
+if ($collectionDoc.Count -ne 1) {
+    throw (Get-LookupError "Insomnia collection named $(Format-Name $Collection)" $collectionDoc.Count $Collection @($collections | ForEach-Object { $_['name'] }))
+}
 $collectionId = $collectionDoc[0]['_id']
 $topFolders = @((Read-InsomniaDb 'insomnia.RequestGroup.db').Values | Where-Object { $_['parentId'] -eq $collectionId })
 
@@ -411,8 +604,10 @@ function Test-Auth($doc) {
 }
 $folderDoc = $null
 if ($Folder) {
-    $match = @($topFolders | Where-Object { $_['name'] -eq $Folder })
-    if ($match.Count -ne 1) { throw "expected one top-level folder '$Folder' in '$Collection', found $($match.Count)" }
+    $match = @($topFolders | Where-Object { Test-SameName $_['name'] $Folder })
+    if ($match.Count -ne 1) {
+        throw (Get-LookupError "top-level folder $(Format-Name $Folder) in $(Format-Name $Collection)" $match.Count $Folder @($topFolders | ForEach-Object { $_['name'] }))
+    }
     $folderDoc = $match[0]
 } else {
     $withAuth = @($topFolders | Where-Object { Test-Auth $_ })
@@ -430,14 +625,20 @@ function Get-EmptyCredentialError([string]$what) {
 # Variables, as Insomnia layers them: the global environment's base, the chosen sub-environment, then the folder's own
 # environment (see Add-Layer).
 $envName, $subName = $Environment.Split('/', 2)
-$global = @($workspaces.Values | Where-Object { $_['scope'] -eq 'environment' -and $_['name'] -eq $envName })
-if ($global.Count -ne 1) { throw "expected one Insomnia global environment named '$envName', found $($global.Count)" }
+$globals = @($workspaces.Values | Where-Object { $_['scope'] -eq 'environment' })
+$global = @($globals | Where-Object { Test-SameName $_['name'] $envName })
+if ($global.Count -ne 1) {
+    throw (Get-LookupError "Insomnia global environment named $(Format-Name $envName)" $global.Count $envName @($globals | ForEach-Object { $_['name'] }))
+}
 $baseEnv = @($environments.Values | Where-Object { $_['parentId'] -eq $global[0]['_id'] })
 if ($baseEnv.Count -ne 1) { throw "expected one base environment under '$envName', found $($baseEnv.Count)" }
 $layers = @(, $baseEnv[0]['data'])
 if ($subName) {
-    $sub = @($environments.Values | Where-Object { $_['parentId'] -eq $baseEnv[0]['_id'] -and $_['name'] -eq $subName })
-    if ($sub.Count -ne 1) { throw "expected one sub-environment '$subName' under '$envName', found $($sub.Count)" }
+    $subs = @($environments.Values | Where-Object { $_['parentId'] -eq $baseEnv[0]['_id'] })
+    $sub = @($subs | Where-Object { Test-SameName $_['name'] $subName })
+    if ($sub.Count -ne 1) {
+        throw (Get-LookupError "sub-environment $(Format-Name $subName) under $(Format-Name $envName)" $sub.Count $subName @($subs | ForEach-Object { $_['name'] }))
+    }
     $layers += , $sub[0]['data']
 }
 if ($folderDoc) { $layers += , $folderDoc['environment'] }

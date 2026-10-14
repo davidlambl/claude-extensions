@@ -1,24 +1,30 @@
 """Cuts a PNG screenshot down for posting: one region, its blank stretches closed up, or rulers to read coordinates from.
 
 Usage:
-  python3 crop.py IMAGE.png [--box LEFT,TOP,RIGHT,BOTTOM] [--squeeze] [--gap N] [--out FILE.png] [--overwrite]
+  python3 crop.py IMAGE.png [--box LEFT,TOP,RIGHT,BOTTOM] [--squeeze] [--gap N] [--edges N] [--out FILE.png] [--overwrite]
   python3 crop.py IMAGE.png --grid [--out FILE.png] [--overwrite]
-  python3 crop.py IMAGE.png
+  python3 crop.py IMAGE.png [--edges N]
 
 Reads one PNG and writes one beside it, IMAGE-cropped.png, or IMAGE-grid.png for --grid, or the file --out names,
 never over the input, and prints one line of JSON: the image's size, the file written and its size, the box as used,
-and the rows and columns the squeeze took out. With no operation it prints the size and writes nothing.
+the rows and columns the squeeze took out, and where --edges put its strips. With no operation it prints the size and
+writes nothing.
 
 --box keeps the pixels from LEFT,TOP up to but not including RIGHT,BOTTOM, clamped to the image. --squeeze then cuts
 every run of identical rows longer than --gap (16 pixels) to --gap rows, then every such run of columns, so blank space
 goes and no row or column that differs from its neighbour is lost. --grid writes a copy ruled every 100 pixels and
 labelled with its coordinates, to read a box's edges from.
 
+--edges N writes the first and last N rows of the result at its full width, to look at its edges at full size, as
+RESULT-top.png and RESULT-bottom.png in a fresh temporary folder, never beside the evidence. With no other operation it
+cuts them from the input, as IMAGE-top.png and IMAGE-bottom.png, to check a result already written. An N at or past the
+height makes each strip the whole image. It does not go with --grid, whose copy is never evidence.
+
 Any PNG that is not interlaced is read, at every depth and colour type. The output is 8-bit RGB, or RGBA where any
 pixel is not opaque, with the source's sRGB, gAMA, cHRM, pHYs and iCCP chunks carried over and its other metadata not.
 Python's standard library alone: no imaging library and no browser.
 """
-import argparse, json, os, struct, sys, tempfile, zlib
+import argparse, json, os, shutil, struct, sys, tempfile, zlib
 from collections import namedtuple
 from itertools import accumulate
 from pathlib import Path
@@ -377,6 +383,14 @@ def squeeze(image, gap):
     return Image(len(kept), len(rows), rows, image.extras), image.height - len(rows), width - len(kept)
 
 
+def strips(image, n):
+    """The first and last n rows of the image at its full width, as two Images, to look at its edges at full size;
+    each is the whole image where n is at or past its height."""
+    n = min(n, image.height)
+    return (Image(image.width, n, image.rows[:n], image.extras),
+            Image(image.width, n, image.rows[image.height - n:], image.extras))
+
+
 # --- The grid
 
 INK, PAPER = b"\x00\x00\x00\xff", b"\xff\xff\xff\xff"
@@ -500,6 +514,15 @@ def write(path, data):
             os.unlink(tmp)
 
 
+def scratch():
+    """A fresh folder of its own in the system's temporary folder, for the strips --edges writes: never the evidence
+    folder, so a strip cannot be posted by mistake."""
+    try:
+        return Path(tempfile.mkdtemp(prefix="crop-edges-"))
+    except OSError as e:
+        raise Problem(f"cannot make a temporary folder for --edges: {e.strerror or e}") from None
+
+
 # --- The command line
 
 def parse_box(text):
@@ -529,21 +552,26 @@ def output_for(source, out, suffix, overwrite=False):
 
 
 def run(args):
-    """What the command line asks for, done; returns what the JSON line reports."""
+    """What the command line asks for, done; returns what the JSON line reports. The strips --edges asks for are
+    written first and the result last, and a failure at any of them removes the strips' folder, so a run that fails
+    leaves nothing behind."""
     source = Path(args.image)
-    if args.grid and (args.box or args.squeeze):
+    if args.grid and (args.box or args.squeeze or args.edges is not None):
         raise Problem("--grid goes on its own: it draws rulers on a copy of the image, to read a box from")
     if args.gap is not None and not args.squeeze:
         raise Problem("--gap goes with --squeeze: it is the pixels a squeezed run keeps")
     gap = GAP if args.gap is None else args.gap
     if args.squeeze and gap < 1:
         raise Problem("--gap must be at least 1")
+    if args.edges is not None and args.edges < 1:
+        raise Problem("--edges must be at least 1: it is the rows each strip holds")
     h, parts = load(source)
     result = {"image": str(source.resolve()), "width": h.width, "height": h.height, "out": None, "out_width": None,
-              "out_height": None, "box": None, "squeezed_rows": 0, "squeezed_columns": 0}
-    if not (args.box or args.squeeze or args.grid):
+              "out_height": None, "box": None, "squeezed_rows": 0, "squeezed_columns": 0, "edges": None}
+    cut = bool(args.box or args.squeeze or args.grid)
+    if not (cut or args.edges):
         return result
-    out = output_for(source, args.out, "grid" if args.grid else "cropped", args.overwrite)
+    out = output_for(source, args.out, "grid" if args.grid else "cropped", args.overwrite) if cut else None
     if args.box:
         used = clamp(h.width, h.height, *args.box)
         image, used = box(decode(h, parts, used[3], used[2]), *used)
@@ -554,8 +582,21 @@ def run(args):
         image, result["squeezed_rows"], result["squeezed_columns"] = squeeze(image, gap)
     if args.grid:
         image = grid(image)
-    write(out, encode_png(image))
-    result.update(out=str(out.resolve()), out_width=image.width, out_height=image.height)
+    folder = None
+    try:
+        if args.edges:
+            folder, paths = scratch(), {}
+            for end, strip in zip(("top", "bottom"), strips(image, args.edges)):
+                paths[end] = folder / f"{(out or source).stem}-{end}.png"
+                write(paths[end], encode_png(strip))
+            result["edges"] = {end: str(path.resolve()) for end, path in paths.items()}
+        if out:
+            write(out, encode_png(image))
+            result.update(out=str(out.resolve()), out_width=image.width, out_height=image.height)
+    except BaseException:
+        if folder:
+            shutil.rmtree(folder, ignore_errors=True)
+        raise
     return result
 
 
@@ -570,6 +611,9 @@ def main(argv=None):
     p.add_argument("--squeeze", action="store_true", help="cut every run of identical rows, then columns, longer than --gap to --gap")
     p.add_argument("--gap", type=int, metavar="N", help=f"the pixels a squeezed run keeps (default {GAP})")
     p.add_argument("--grid", action="store_true", help="write a copy ruled every 100 pixels, to read a box from")
+    p.add_argument("--edges", type=int, metavar="N",
+                   help="write the first and last N rows of the result at full width to a fresh temporary folder, "
+                        "to look at its edges; with no other operation, of the input")
     p.add_argument("--out", metavar="FILE", help="the file to write (default IMAGE-cropped.png, or IMAGE-grid.png)")
     p.add_argument("--overwrite", action="store_true", help="let --out replace a file that exists")
     argv = sys.argv[1:] if argv is None else list(argv)

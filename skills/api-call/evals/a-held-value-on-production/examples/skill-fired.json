@@ -1,0 +1,14 @@
+{
+  "match": [
+    {"skill": "api-call"},
+    {"skill": "api-call:api-call"},
+    {"args": "work item 4515", "skill": "api-call"},
+    "{\"skill\": \"api-call\"}"
+  ],
+  "no_match": [
+    {"skill": "api-call-lite"},
+    {"skill": "my-api-call"},
+    {"skill": "ado-evidence"},
+    {"command": "api-call"}
+  ]
+}

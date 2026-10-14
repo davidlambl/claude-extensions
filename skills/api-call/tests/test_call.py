@@ -214,6 +214,19 @@ class CallPy(unittest.TestCase):
                 self.assertEqual(self.source_calls(), [], "the source ran, so a request would have been sent")
                 self.assertFalse(self.out.exists())
 
+    # Issue 4: with MSYS_NO_PATHCONV=1 set, Git Bash converts no path at all, so this script's path written as
+    # /c/Users/... reaches Python unconverted and is not found. The refusal offers the variable, so it says that too.
+    def test_the_refusal_says_to_write_file_paths_as_c_colon_with_the_variable_set(self):
+        # The second is where a per-user Git for Windows puts /api/...; the path quoted back is left out of the check.
+        for rewritten in ("C:/Program Files/Git/api/widgets/42",
+                          "C:/Users/me/AppData/Local/Programs/Git/api/widgets/42"):
+            with self.subTest(path=rewritten):
+                proc = self.call(RECORD, path=rewritten)
+                self.assertEqual(proc.returncode, 1, proc.stdout)
+                advice = proc.stderr.replace(repr(rewritten), "")
+                self.assertIn("MSYS_NO_PATHCONV=1", advice)
+                self.assertIn("C:/Users/", advice)
+
     def test_correctness_12_a_doubled_leading_slash_reaches_the_source_as_one(self):
         # Git Bash passes //api/widgets/42 through unchanged, so the workaround the refusal names must not send //api.
         for typed in ("//api/widgets/42", "///api/widgets/42"):

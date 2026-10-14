@@ -9,6 +9,10 @@ Reads Postman's exports, read-only:
   - the collection export (schema v2.1 or v2.0), for its variables and the auth on the collection or on a top-level
     folder (API key, bearer or basic); a folder named with --folder that has no auth of its own inherits the
     collection's, as in Postman
+--folder is matched exactly, in its own letter case, once both names are composed (NFC): an accent stored as a letter
+and a combining mark, as macOS can write it, is the same text as the accent typed. When no folder has the name, the
+error names those that differ from it only in letter case, else only in letter case or in characters it shows as
+escapes, else the closest: three at most, with any secret in them masked. It never chooses one.
 --vars lays a flat {"name": "value"} file over the environment, for secrets kept out of the export; every value in
 it is a secret. A client certificate is PEM: --cert and --key, with API_CALL_KEY_PASSPHRASE unlocking the key.
 Only {{name}} templates are resolved, in a value that holds templates of its own too; names are case-sensitive, as
@@ -41,7 +45,8 @@ variable is not defined, the one variable whose name matches it ignoring case is
 collection written for baseURL). A limit: a key outside ASCII is sent as its Latin-1 bytes, and an echo of those bytes
 percent-encoded (%E4 for ä) is not looked for, so keep keys ASCII.
 """
-import argparse, base64, email.message, html, json, os, re, ssl, sys, time, urllib.error, urllib.parse, urllib.request
+import argparse, base64, email.message, html, json, os, re, ssl, sys, time, unicodedata, urllib.error, urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -71,6 +76,18 @@ BOMS = ((b"\xef\xbb\xbf", "utf-8"), (b"\xff\xfe\x00\x00", "utf-32-le"), (b"\xff\
         (b"\xfe\xff", "utf-16-be"), (b"\x00\x00\xfe\xff", "utf-32-be"))
 UNREACHED = ("the request failed: the base URL holds credentials that could not be parsed or reached; "
              "percent-encode any / ? # or @ in its user or password")
+# A name in a message shows at most NAME_WIDTH characters between its quotes (see shown_name), and a message lists at
+# most NAMES_LISTED names. Names that differ only in unseen characters, and close names, are looked for among
+# NAMES_COMPARED names at most, each LONGEST_COMPARED characters at most (see name_hint), so a shared export can make
+# neither the message long nor the search slow.
+NAME_WIDTH, NAMES_LISTED, NAMES_COMPARED, LONGEST_COMPARED = 80, 3, 1000, 128
+# What .NET will not compose (see composed): a surrogate, which in a Python string is always a lone one, and U+FFFE.
+UNCOMPOSABLE = re.compile(r"[\ud800-\udfff\ufffe]")
+# The code points a name shows as escapes besides its control, format, separator, surrogate and unassigned ones, as
+# render.py draws a body: the other default-ignorable ones, which draw nothing, and the blank Braille pattern and the
+# object replacement character, which draw as a space.
+UNSEEN = ((0x034F, 0x034F), (0x115F, 0x1160), (0x17B4, 0x17B5), (0x180B, 0x180F), (0x2800, 0x2800), (0x3164, 0x3164),
+          (0xFE00, 0xFE0F), (0xFFA0, 0xFFA0), (0xFFFC, 0xFFFC), (0xE0100, 0xE01EF))
 
 
 class Problem(Exception):
@@ -131,11 +148,18 @@ def find(texts, secrets, least=6):
     return None
 
 
-def scrub(text, secrets):
-    """text with every form of every secret masked, the longest forms first so no part of one is left behind; or
-    WITHHELD when a secret would still show once the text is decoded."""
+def masked(text, secrets):
+    """text with every form of every secret masked, however short, the longest forms first so no part of one is left
+    behind."""
     for form in sorted({f for s in secrets for f in forms(s, least=1)}, key=len, reverse=True):
         text = text.replace(form, MASK)
+    return text
+
+
+def scrub(text, secrets):
+    """text with every form of every secret masked (see masked); or WITHHELD when a secret would still show once the
+    text is decoded."""
+    text = masked(text, secrets)
     return WITHHELD if find([text], secrets) else text
 
 
@@ -272,14 +296,154 @@ def has_auth(item):
     return bool(item.get("auth")) and (item["auth"].get("type") or "noauth") != "noauth"
 
 
-def pick_folder(collection, name):
-    """The top-level folder whose auth applies: the one named; else none when the collection has its own auth;
-    else the only folder with auth."""
+def unseen(ch):
+    """Whether a name in a message shows ch as its escape (see shown_name): a control or format character, the bidi
+    marks among them, a line or paragraph separator, a space other than U+0020, a lone surrogate, an unassigned code
+    point, and those in UNSEEN. Each draws nothing, draws as a space it is not, or could reorder or break the line. As
+    the Insomnia source's Test-Unseen."""
+    cp = ord(ch)
+    return not " " <= ch <= "~" and (unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp", "Zs", "Cs", "Cn")
+                                     or any(lo <= cp <= hi for lo, hi in UNSEEN))
+
+
+def shown_name(name, secrets=()):
+    """name as a message shows it: in single quotes, a ' or a \\ in it escaped with a \\, and each character unseen
+    names as its \\uXXXX escape (\\U and eight hex digits past the Basic Multilingual Plane). A name that would show more
+    than NAME_WIDTH characters is cut before the first that does not fit, and ... follows its closing quote. Names come
+    from a shared export, so none can break the message's line, fake its quoting or make it long. Every form of a
+    secret in it is masked first (see masked), since part of one cut short, or one with a quote escaped, is a form the
+    message's own mask does not look for. As the Insomnia source's Format-Name, whose names are looked up before any
+    secret is known."""
+    out, width = [], 0
+    for ch in masked(name, secrets):
+        cp = ord(ch)
+        if ch in "'\\":
+            piece = "\\" + ch
+        elif unseen(ch):
+            piece = "\\" + (f"u{cp:04x}" if cp <= 0xFFFF else f"U{cp:08x}")
+        else:
+            piece = ch
+        if width + len(piece) > NAME_WIDTH:
+            return "'" + "".join(out) + "'..."
+        out.append(piece)
+        width += len(piece)
+    return "'" + "".join(out) + "'"
+
+
+def listed(names, secrets=()):
+    """Names as a message lists them, each as shown_name shows it: 'A', 'A' and 'B', or 'A', 'B' and 'C'; past
+    NAMES_LISTED, the first of them and how many more."""
+    shown = [shown_name(n, secrets) for n in names[:NAMES_LISTED]]
+    if len(names) > NAMES_LISTED:
+        return ", ".join(shown) + f" and {len(names) - NAMES_LISTED} more"
+    return shown[0] if len(shown) == 1 else ", ".join(shown[:-1]) + " and " + shown[-1]
+
+
+def composed(name):
+    """name in Unicode's composed form (NFC), so that a name stored decomposed, as macOS can write an accent (an e and
+    a combining acute), is the same text as one typed composed (U+00E9). One that .NET will not compose (see
+    UNCOMPOSABLE) stays as it is. As the Insomnia source's Get-Composed."""
+    return name if UNCOMPOSABLE.search(name) else unicodedata.normalize("NFC", name)
+
+
+def same_name(name, wanted):
+    """Whether a name from an export is the one wanted: compared ordinal once both are composed (see composed), so that
+    letter case and every other character count. As the Insomnia source's Test-SameName."""
+    return isinstance(name, str) and composed(name) == composed(wanted)
+
+
+def folded(name):
+    """name composed (see composed) and case-folded, to compare in any letter case: ordinal, and the same in every
+    culture. As the Insomnia source's Get-Folded."""
+    return composed(name).casefold()
+
+
+def skeleton(name):
+    """name as the near-miss search reads it (see name_hint): each space other than U+0020 as one, every other
+    character unseen names dropped, then composed and folded (see folded). Names with the same skeleton differ only
+    in letter case or in characters a message shows as escapes. As the Insomnia source's Get-Skeleton."""
+    return folded("".join(" " if unicodedata.category(ch) == "Zs" else "" if unseen(ch) else ch for ch in name))
+
+
+def close_edits(a, b):
+    """How many edits apart names of lengths a and b may be and still count as close: one for every five characters
+    of the longer, one at least and three at most; none when the longer is under three characters."""
+    longer = max(a, b)
+    return 0 if longer < 3 else min(3, max(1, longer // 5))
+
+
+def edits(a, b, most):
+    """How many single-character edits turn a into b (an insertion, a deletion, a substitution, or a swap of two
+    neighbours), or most + 1 when that is more than most. Only the cells within most of the diagonal are worked out,
+    and the work stops once two rows running are past most, since no way to the end can skip both. As the Insomnia
+    source's Get-Edits."""
+    n, m, past = len(a), len(b), most + 1
+    if abs(n - m) > most:
+        return past
+    before, row = None, [min(j, past) for j in range(m + 1)]
+    for i in range(1, n + 1):
+        new = [past] * (m + 1)
+        new[0] = min(i, past)
+        for j in range(max(1, i - most), min(m, i + most) + 1):
+            d = min(row[j - 1] + (a[i - 1] != b[j - 1]), row[j] + 1, new[j - 1] + 1)
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                d = min(d, before[j - 2] + 1)
+            new[j] = min(d, past)
+        if min(new) > most and min(row) > most:
+            return past
+        before, row = row, new
+    return row[m]
+
+
+def name_hint(wanted, names, secrets=()):
+    """What the message for a name that matched none adds about those that came near it, or "". In turn: the names that
+    differ from it only in letter case, compared folded (see folded); else those that differ only in letter case or in
+    characters a message shows as escapes, compared as skeletons (see skeleton); else the closest, the fewest edits
+    apart within a few (see close_edits), compared as skeletons too. It lists NAMES_LISTED at most and counts the rest
+    (see listed), each with any secret in it masked. Each is shown, never chosen: a name in another letter case may be
+    another environment, such as production. Names only, never a value. Among more than NAMES_COMPARED names, or for a
+    name past LONGEST_COMPARED characters, only letter case is looked at, and otherwise only names of LONGEST_COMPARED
+    characters at most are. As the Insomnia source's Get-NameHint."""
+    names = [n for n in sorted({"" if n is None else str(n) for n in names}) if not same_name(n, wanted)]
+    want = folded(wanted)
+    cased = [n for n in names if folded(n) == want]
+    if cased:
+        return f"; names are case-sensitive, and {listed(cased, secrets)} {differ(cased)} only in letter case"
+    if len(names) > NAMES_COMPARED or len(wanted) > LONGEST_COMPARED:
+        return ""
+    names = [n for n in names if len(n) <= LONGEST_COMPARED]
+    want, shapes = skeleton(wanted), [skeleton(n) for n in names]
+    same_shape = [n for n, s in zip(names, shapes) if s == want]
+    if same_shape:
+        return (f"; names are matched exactly, and {listed(same_shape, secrets)} {differ(same_shape)} only in letter "
+                "case or in characters shown as escapes")
+    closest, least = [], 4  # more edits than close_edits ever allows
+    for n, s in zip(names, shapes):
+        most = min(close_edits(len(want), len(s)), least)  # one further off than the closest yet is of no use
+        if most and (d := edits(want, s, most)) <= most:
+            if d < least:
+                closest, least = [], d
+            closest.append(n)
+    if not closest:
+        return ""
+    return f"; the closest {'name is' if len(closest) == 1 else 'names are'} {listed(closest, secrets)}"
+
+
+def differ(names):
+    """The verb for names that differ from the one wanted: one differs, more differ."""
+    return "differs" if len(names) == 1 else "differ"
+
+
+def pick_folder(collection, name, secrets=()):
+    """The top-level folder whose auth applies: the one named, exactly (see same_name); else none when the collection
+    has its own auth; else the only folder with auth. When no folder has the name, the message names those that came
+    near it (see name_hint). Every name it shows has the secrets known so far masked (see shown_name)."""
     folders = [i for i in collection.get("item") or [] if isinstance(i, dict) and "item" in i]
     if name:
-        match = [f for f in folders if f.get("name") == name]
+        match = [f for f in folders if same_name(f.get("name"), name)]
         if len(match) != 1:
-            raise Problem(f"expected one top-level folder '{name}', found {len(match)}")
+            hint = "" if match else name_hint(name, [f.get("name") for f in folders], secrets)
+            raise Problem(f"expected one top-level folder {shown_name(name, secrets)}, found {len(match)}{hint}")
         return match[0]
     if has_auth(collection):
         return None
@@ -353,7 +517,7 @@ def build(collection, environment, extra, folder_name, base_url_var, path):
     secrets += [form for c in credential for form in (c, urllib.parse.unquote(c))]
     if not path.startswith("/"):
         path = "/" + path
-    folder = pick_folder(collection, folder_name)
+    folder = pick_folder(collection, folder_name, secrets)
     # A folder with no auth of its own inherits the collection's, as in Postman; only an explicit noauth means none.
     auth = (folder or {}).get("auth") or collection.get("auth") or {}
     kind = auth.get("type") or "noauth"
