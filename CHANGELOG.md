@@ -160,6 +160,11 @@ In the docs:
 
 Split out of api-shots, so that where the records and images go is the user's choice.
 
+### 0.1.9 — 2026-10-14
+
+- SKILL.md says how to check a box's edge, since the grid rules only every 100 pixels and a thin strip of chrome falls between its rules. The session cuts the top and bottom 80 pixels of the result into scratch files, outside the evidence folder, and looks at them at full size, judging only whether chrome is still visible and whether the first or last line of content is clipped, and moves the edge and runs again from the original if so. A result a little wider than it could be is left alone.
+- The cut-the-window-down eval's tab-strip grader passes a squeezed copy that is boxed and squeezed again with edges from its own grid, which is sound. It fails a squeezed copy boxed without squeezing again, or boxed with edges read from the original. Strips cut into scratch files to check the edges are not counted.
+
 ### 0.1.8 — 2026-10-14
 
 - SKILL.md says that a squeeze keeps window chrome such as a tab strip, which can show other tabs' titles and holds open the blank columns beneath it. When chrome remains, the session boxes it off from the original in the same run as the squeeze, with the edge read from the original's grid. On a real SSMS window on Windows that took the result from 1508 x 269 to 1236 x 243, without the other tabs' server names.
