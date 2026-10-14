@@ -16,7 +16,7 @@ The newest version of each extension is the supported one. There are no backport
 
 They run on your machine, with your access. That is the point of them, and it is also the risk.
 
-- **api-call** reads Insomnia's local data and Postman's exports, including the API keys, bearer tokens, basic-auth passwords and client certificates a collection holds. It sends one GET to the environment you name, which may be production, or two with `--warm`: one untimed, then the one it records.
+- **api-call** reads Insomnia's local data and Postman's exports, including the API keys, bearer tokens, basic-auth passwords and client certificates a collection holds. It sends one GET to the environment you name, which may be production, or two with `--warm`: one untimed, then the one it records. Some endpoints change state on a GET, such as a duplicate check that registers an identifier it has not seen. The skill reads each step for that before calling it, and in production never calls an endpoint that can write, whatever its method or input.
 - **ado-evidence** uploads files and posts a comment to Azure DevOps under your identity, with a token from the Azure CLI or `AZURE_DEVOPS_TOKEN`. Its `crop.py` reads one PNG and writes one beside it, or where `--out` says, never over the input, and reaches no network.
 - **context-bar** reads this session's token counts and draws them. To count the overhead as `/context` does, it has Claude Code send token-count requests to the Anthropic API, on the session's own sign-in, one per tool and memory file, the first time it measures a session and again whenever the overhead changes. It makes no other network calls and handles no credentials itself.
 
@@ -47,6 +47,7 @@ These are the properties a bug report should test against:
 
 These are not bugs. They are the edges of the guarantees above.
 
+- **A GET can write, and the scripts cannot tell.** api-call sends only GET, but some endpoints create or register something on one. The skill judges by the step and what is known about the endpoint, so an endpoint that writes without saying so is called like any other. Treating every GET as a possible write would refuse ordinary reads. A script run by hand makes no such check.
 - **A key belongs in the auth, not in the base URL.** A key written into the base URL's path or query, such as an Azure Functions `?code=`, is configuration to api-call. It shows in the record and the image, and a response that echoes it is printed. Put it in the auth, as an API key in a query parameter.
 - **Percent-encode a user or password in the base URL.** An unencoded `/`, `?` or `#` in one ends the host early, so the request goes to a host made of part of the credential, and the record shows it. Only the error message is guarded.
 - **A literal header value is not a secret to api-call.** A collection header whose value is typed in rather than drawn from a variable is shown as typed. In the Insomnia source, a templated value of a standard header such as `Referer` is shown as resolved. Keep secrets in environment variables.
