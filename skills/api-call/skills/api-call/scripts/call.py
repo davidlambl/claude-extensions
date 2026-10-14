@@ -23,12 +23,13 @@ or are the paths of a Postman environment export and collection export.
 Writes DIR/NAME.json, the record of the exchange, and with --shot DIR/NAME.png with its .html page. Prints one
 line of JSON with the result. The source script sends the request; nothing secret reaches this script.
 
-In Git Bash on Windows, run it with MSYS_NO_PATHCONV=1 set, or write the path with a doubled leading slash
-(GET //api/widgets/42, read as /api/widgets/42): the shell otherwise rewrites /api/widgets/42 into a Windows path
-before this script runs, and the script stops rather than send that. With MSYS_NO_PATHCONV=1 set, the shell
-converts no path at all, and Python takes /c/Users/... for a folder named c at the root of the current drive,
-where it finds no script. So write this script's path, and any other file path, as C:/Users/... instead. With the
-doubled slash, leave the variable unset, and the shell converts every file path as usual.
+In Git Bash on Windows, write the path with a doubled leading slash (GET //api/widgets/42, read as /api/widgets/42),
+or run it with MSYS_NO_PATHCONV=1 set: the shell otherwise rewrites /api/widgets/42 into a Windows path before this
+script runs, and the script stops rather than send that. Either way, write this script's path, and every other file
+path, as C:/Users/..., which the shell passes on as written. With MSYS_NO_PATHCONV=1 set, the shell converts no
+path at all, so Python takes /c/Users/... for a folder named c at the root of the current drive. A script path
+written that way is not found, and an --out folder written that way is made there without an error. ~, $HOME, $PWD
+and /tmp are the shell's paths too, and cygpath -m prints any of them in the C:/ form.
 """
 import argparse, json, os, re, shutil, subprocess, sys
 from pathlib import Path
@@ -63,9 +64,12 @@ if re.match(r"[A-Za-z]:[\\/]", args.path):
     # Git Bash (MSYS) rewrites an argument that starts with / into a Windows path under its own folder as it launches
     # python, so the path arrives here as C:/Program Files/Git/api/..., which an API would answer with a 404 that
     # a step expecting one would take for a pass. Setting MSYS_NO_PATHCONV here would be too late: that hop is done.
+    # Set in the shell, it stops Git Bash converting any path, this script's own included, so the message asks for
+    # C:/Users/... paths beside it.
     sys.exit(f"the path {args.path!r} is a Windows path, which is what Git Bash makes of /api/... before this script "
-             "runs. Run the command with MSYS_NO_PATHCONV=1 set in the shell, or write the path with a doubled "
-             "leading slash (GET //api/widgets/42).")
+             "runs. Write the path with a doubled leading slash (GET //api/widgets/42). Or run the command with "
+             "MSYS_NO_PATHCONV=1 set in the shell, and write this script's path, and every other file path, as "
+             "C:/Users/..., since Git Bash then converts no path at all.")
 if args.path.startswith("//"):
     # Git Bash passes //api/widgets/42 through as typed, taking it for a network path, so the doubled slash the
     # message above suggests arrives here; the collection's base URL takes the path with one.
