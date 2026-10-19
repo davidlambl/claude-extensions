@@ -43,7 +43,7 @@ Exit codes: 0 ran; 1 lprun9 failed, with its error shown; 2 the command line or 
 
 ## Rules
 
-- The guard is a shape check, and the login is the boundary. Say so when the probe refuses (exit 5): the user needs a login that can only read.
+- The guard is a shape check, and the login is the boundary. Say so when the probe refuses (exit 5): the user needs a login that can only read, or can list the connection in `SQL_READ_WRITABLE_OK` in their Claude Code settings' `env`. That choice is theirs: never set the variable, in a command or a settings file.
 - No writes through this skill, not even small ones, and not with approval: an `UPDATE`, `INSERT`, `DELETE` or schema change is the user's to run in LINQPad or SSMS. Say so; at most, read the rows and hand the user the SQL.
 - No other SQL client against these connections: no `sqlcmd`, `Invoke-Sqlcmd`, ODBC or ADO.NET code, and no `lprun9 -cxname=` or `.linq` of your own. Point the user to LINQPad or SSMS.
 - Never copy a `<Connection>` block into a scratch file, and never read or print a password from `ConnectionsV2.xml`.

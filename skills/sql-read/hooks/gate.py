@@ -689,9 +689,10 @@ MODULE, MODULE_READ = re.compile(r"-\w*m"), re.compile(r"-\w*mread")  # python's
 DEFINERS = frozenset("alias set-alias new-alias sal nal doskey".split())  # programs that make a name stand for another
 BASH_FUNCTION = re.compile(r"(?:^|[\s;&|(){}])[^\s;&|()<>{}'\"`$=]+[ \t]*\([ \t]*\)")  # name() { ...; }
 # The environment variables the plan reads: for the connection list SQL_READ_CONNECTIONS, else APPDATA or the home
-# folder; for lprun9 LPRUN9, PATH and LOCALAPPDATA. A line that changes one can make the gate's plan untrue, and one
-# that changes where python finds code (PYTHONPATH, PYTHONHOME and the like) can change what runs as read.py.
-ENVIRONMENT = (r"(?:sql_read_connections|lprun9|localappdata|appdata|path|home|userprofile|homedrive|homepath"
+# folder; for lprun9 LPRUN9, PATH and LOCALAPPDATA; for the probe the user's override SQL_READ_WRITABLE_OK. A line
+# that changes one can make the gate's plan untrue, and one that changes where python finds code (PYTHONPATH,
+# PYTHONHOME and the like) can change what runs as read.py.
+ENVIRONMENT = (r"(?:sql_read_connections|sql_read_writable_ok|lprun9|localappdata|appdata|path|home|userprofile|homedrive|homepath"
                r"|python(?:path|home|userbase|pycacheprefix|platlibdir|caseok|inspect|startup|breakpoint|executable))")
 SETS_ENVIRONMENT = re.compile(
     rf"(?<![\w.:/\\$@%-]){ENVIRONMENT}\s*\+?=(?!=)"  # NAME=x before a command; export, env, declare or cmd's set

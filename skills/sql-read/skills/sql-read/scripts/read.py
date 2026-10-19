@@ -96,6 +96,8 @@ WRITE_PERMISSIONS = ("INSERT", "UPDATE", "DELETE", "ALTER", "CONTROL", "CREATE T
                      "CREATE FUNCTION", "CREATE VIEW", "ALTER ANY SCHEMA", "TAKE OWNERSHIP", "ALTER ANY USER",
                      "ALTER ANY ROLE")
 GUARD_MARK = "sql-read-guard:"
+# The user's override of the probe: connection names, comma-separated, or * for all, whose login may write.
+WRITABLE_OK = "SQL_READ_WRITABLE_OK"
 PROBE = (
     "IF IS_SRVROLEMEMBER('sysadmin') = 1\n"
     "   OR IS_MEMBER('db_owner') = 1 OR IS_MEMBER('db_datawriter') = 1 OR IS_MEMBER('db_ddladmin') = 1\n"
@@ -465,6 +467,14 @@ class _TooBig(Exception):
     """The --sql file is far over the guard's limit, so it is refused without being read: exit 4."""
 
 
+def writable_ok(name):
+    """Whether env SQL_READ_WRITABLE_OK lets connection name run with a login that can write: the variable holds
+    connection names, comma-separated and compared as --cx is (trimmed, case-insensitive), or * for every one. The
+    user sets it, in Claude Code's settings or the shell; the guard and the approval prompt still apply."""
+    names = {part.strip().casefold() for part in os.environ.get(WRITABLE_OK, "").split(",") if part.strip()}
+    return bool(name and name.strip()) and ("*" in names or name.strip().casefold() in names)
+
+
 def _blank(command=None, code=0, error=None):
     plan = dict.fromkeys(PLAN_KEYS)
     plan.update(command=command, exit=code, error=error)
@@ -480,7 +490,7 @@ def _plan(opts, cwd, runs=False):
     plan.update(transport=opts.via, connection=opts.cx, timeout=opts.timeout)
     if query:
         plan.update(max_rows=opts.max_rows, lock_timeout_ms=opts.lock_timeout, nolock=opts.nolock,
-                    allow_writable_login=opts.allow_writable_login, format=opts.format)
+                    allow_writable_login=opts.allow_writable_login or writable_ok(opts.cx), format=opts.format)
         path = _local(opts.sql, cwd)
         out, name = path.parent / "sql-read", _default_name(path.stem)
         try:
@@ -743,7 +753,7 @@ def _excerpt(sql):
 def _warnings(plan):
     warnings = []
     if plan.get("allow_writable_login"):
-        warnings.append("\u26a0 writable login allowed")
+        warnings.append("\u26a0 writable login allowed" + (f" by env {WRITABLE_OK}" if writable_ok(plan.get("connection")) else ""))
     if plan.get("command") == "query" and plan.get("max_rows") == 0:
         warnings.append("\u26a0 no row cap")
     if plan.get("nolock"):
