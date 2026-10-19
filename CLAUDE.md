@@ -39,3 +39,9 @@ Secrets in api-call and ado-evidence, which SECURITY.md promises to users:
 - The image draws the body exactly as the API returned it. Decoding escapes or re-serializing JSON before drawing showed a secret the source's check had never seen.
 - In PowerShell, a list passed through `$( )` or `@( )` reaches the function as a copy, so whatever the function adds to it is lost. Pass the variable itself, or return values instead.
 - Verifying a change to either skill means hunting both directions: secrets that get through, and ordinary steps that get refused.
+
+In linqpad and sql-read:
+
+- sql-read's secret is the `Password` element of LINQPad's `ConnectionsV2.xml`. A connection's DisplayName, server, database, user name and auth kind are configuration: shown, never refused.
+- The guard is a shape check and the login is the boundary. A change to the deny list or the prelude carries tests in both directions: a write refused, and an ordinary read passed (a CTE, a `DECLARE` prelude, `WITH (NOLOCK)`, `FOR JSON`).
+- The gates' matcher stays `Bash|PowerShell`, since on Windows with the PowerShell tool shell commands go through it. Each handler keeps its `if`, and `onFailure: "block"` stays, so a crashed gate never becomes a silent allow. Each `hooks.json` is pinned by a test, because `claude plugin validate --strict` passes an unknown field or a wrong value.
