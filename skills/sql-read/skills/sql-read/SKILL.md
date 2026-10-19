@@ -30,7 +30,7 @@ Runs one SELECT against a SQL Server database through a connection saved in LINQ
    ```
 
    `plan` runs nothing. Exit 4 means the guard refused the SQL, and its message says why; a column named like a keyword passes in brackets, as `[save]`. Exit 3 means the connection or `lprun9` cannot be used.
-4. When the plan exits 0, run it: the same command with `query` in place of `plan`. The permission prompt that appears is the approval: do not ask again in chat, do not run anything that avoids it, and never add an allow rule for it. If the user declines, stop. Pass `--allow-writable-login` only when the user asked for it in this turn, or when `plan` said the connection is listed in `SQL_READ_WRITABLE_OK`.
+4. When the plan exits 0, run it: the same command with `query` in place of `plan`. The permission prompt that appears is the approval: do not ask again in chat, do not run anything that avoids it, and never add an allow rule for it. If the user declines, stop. Pass `--allow-writable-login` only when the user asked for it in this turn, or when `plan` said the connection is listed in `SQL_READ_WRITABLE_OK`; put it first, `query --allow-writable-login --cx …`, the form the user's allow rule matches. If auto mode denies it, stop and show the user the command; never try another route.
 5. Report the rows in the reply, with the count, the time and any cap note from the summary line. Never write the results to a file, nor redirect them to one: they are business data.
 
 `--max-rows N` sets the cap (200 by default, 0 for none) and `--timeout S` the time allowed (60 s by default). `check --cx "<name>"` lists what the login can write; it prompts like `query`.

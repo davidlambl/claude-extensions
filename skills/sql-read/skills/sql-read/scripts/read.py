@@ -909,8 +909,8 @@ def _show(opts):
     if plan["exit"]:
         _say(f"sql-read: {_visible(plan['error'])}")
     elif plan["command"] == "query" and not plan["allow_writable_login"] and writable_ok(plan["connection"]):
-        _say(f"sql-read: {_visible(plan['connection'])} is listed in {WRITABLE_OK}: if its login can write, run query "
-             "with --allow-writable-login; the prompt will say the connection is listed")
+        _say(f"sql-read: {_visible(plan['connection'])} is listed in {WRITABLE_OK}: if its login can write, run it as "
+             "query --allow-writable-login --cx ..., the flag first; the prompt will say the connection is listed")
     return plan["exit"]
 
 
