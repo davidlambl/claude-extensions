@@ -64,15 +64,13 @@ When a connection has no login that can only read, you can let it run with the o
 
 The variable changes nothing that runs. It is your leave for Claude to pass `--allow-writable-login` for those connections: `plan` says when a connection is listed, and only that flag, on the command line the hook reads, leaves the probe out. So the prompt always knows: it shows `⚠ writable login allowed (listed in env SQL_READ_WRITABLE_OK)`, or `(NOT listed …)` when the flag comes without your leave, as the hook's own environment has it. The guard still refuses anything but one SELECT, every run still asks, and `check` still probes. The hook asks with "could not read" when a command line sets the variable itself. With the flag, the guard and your approval are all that stand between the SQL and a write.
 
-In auto mode the classifier refuses the flag as a safety bypass, since it cannot see your setting. To let it through to the hook's prompt, add allow rules for the one form Claude uses: `read.py` by its full path, quoted as Claude types it, then the flag first. A `*` goes only at the end. One before the subcommand, as in `*read.py*`, would also approve whatever options stand there, and Claude Code warns of it.
+In auto mode the classifier refuses the flag as a safety bypass, since it cannot see your setting. To let it through to the hook's prompt, add the allow rules that `read.py rules` prints, into `permissions.allow` of your settings:
 
-```json
-{ "permissions": { "allow": [
-  "Bash(python3 \"C:/path/to/sql-read/skills/sql-read/scripts/read.py\" query --allow-writable-login *)",
-  "PowerShell(python3 \"C:/path/to/sql-read/skills/sql-read/scripts/read.py\" query --allow-writable-login *)"] } }
+```sh
+python3 <path to read.py> rules
 ```
 
-Use the path `plan` shows Claude, which is where the plugin is installed. After an update moves the plugin, the rule needs the new path.
+They name this install's `read.py` by its full path, quoted, then `query --allow-writable-login`, with a `*` only at the end. One before the subcommand, as in `*read.py*`, would also approve whatever options stand there, and Claude Code warns of it. `plan`'s note gives Claude the command in exactly that form. A rule cannot hold a variable, so when an update moves the plugin, run `rules` again and replace the two lines.
 
 The rule only takes the classifier out of the way: the hook still asks for every run, with the plan and the warning, and an ask beats an allow. Claude never adds this rule; it is yours to add.
 
@@ -86,6 +84,7 @@ python3 skills/sql-read/skills/sql-read/scripts/read.py check --cx Sales
 | Command | What it does |
 | --- | --- |
 | `connections [--json]` | Lists the saved connections, named or not: name, sign-in kind (`sql`, `windows` or `aad`), production flag, server and database, and user name. One with no name is listed as `(no name)` and cannot be chosen until you name it in LINQPad. `--json` prints an object with `source`, the list's path, and `connections`, each with `name`, `server`, `database`, `auth`, `user` and `production`. Touches no database. |
+| `rules` | Prints, as JSON for your settings, the two allow rules that let `query --allow-writable-login` past auto mode's classifier, with this `read.py`'s own path. Touches no database. |
 | `plan --cx NAME [--sql FILE] [query options]` | Prints what `query` would run, or `check` without `--sql`, as one JSON object, and runs nothing. Its fields: `command`, `transport`, `connection`, `server`, `database`, `production`, `auth`, `sql`, `guard` (`ok` and `reason`), `max_rows`, `timeout`, `lock_timeout_ms`, `nolock`, `allow_writable_login`, `format`, `artifact` (the `.linq` it would write), `argv` (the command it would run), `exit` and `error`. `sql` is `null` when the guard refuses the SQL, so a wrong `--sql` file is never copied into the output. It exits 2 for the command line or the `--sql` file, 4 when the guard refuses the SQL, 3 when the connection or lprun9 cannot be used, else 0. |
 | `query --cx NAME --sql FILE [query options]` | Runs the SQL once, after the guard and with the prelude below. |
 | `check --cx NAME [--timeout S]` | Lists what the login can write: one row for each write role or database permission it holds. Exits 0 when it holds none, 5 when it holds any, with a one-line verdict on stderr. |

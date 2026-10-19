@@ -986,5 +986,35 @@ class WritableOk(Harness):
         self.assertNotIn("SQL_READ_WRITABLE_OK", err)
 
 
+class Rules(Harness):
+    """read.py rules prints the allow rules that let query --allow-writable-login past auto mode's classifier, with
+    read.py's own installed path, and plan's note gives the command in the form those rules match."""
+
+    def setUp(self):
+        super().setUp()
+        self.use()
+        self.sql = self.sql_file("SELECT TOP 5 * FROM dbo.Orders")
+        self.path = Path(read.__file__).resolve().as_posix()
+
+    def test_rules_prints_both_allow_rules_with_this_install_s_path(self):
+        code, out, err = self.main("rules")
+        self.assertEqual(code, 0)
+        rules = json.loads(out.decode("ascii"))["permissions"]["allow"]
+        prefix = f'python3 "{self.path}" query --allow-writable-login'
+        self.assertEqual(rules, [f"Bash({prefix} *)", f"PowerShell({prefix} *)"])
+        for rule in rules:
+            inner = rule[rule.index("(") + 1:-1]
+            self.assertEqual(inner.count("*"), 1)
+            self.assertTrue(inner.endswith(" *"), "a wildcard only at the end")
+        self.assertIn("settings", err.decode("utf-8"))
+
+    def test_plan_s_note_gives_the_command_the_rules_match(self):
+        patcher = mock.patch.dict(os.environ, {"SQL_READ_WRITABLE_OK": "Sales"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        _, _, err = self.plan("--cx", "Sales", "--sql", self.sql)
+        self.assertIn(f'python3 "{self.path}" query --allow-writable-login --cx', err)
+
+
 if __name__ == "__main__":
     unittest.main()

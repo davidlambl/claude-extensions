@@ -3,12 +3,15 @@ previewed as a plan before it runs.
 
 Usage:
   python3 read.py connections [--json]
+  python3 read.py rules
   python3 read.py plan  --cx NAME [--sql FILE] [query options]
   python3 read.py check --cx NAME [--timeout S]
   python3 read.py query --cx NAME --sql FILE [--max-rows N] [--format csv|csvi|text|html] [--timeout S]
                         [--lock-timeout MS] [--nolock] [--allow-writable-login] [--out DIR] [--name NAME]
 
   connections  lists the saved connections, named or not; --json prints them as JSON. No password is ever read out.
+  rules        prints the allow rules, with this read.py's path, that let query --allow-writable-login past auto
+               mode's classifier to the hook's prompt, for the user to add to their Claude Code settings.
   plan         prints what query (with --sql) or check (without it) would run, as one JSON object, and runs
                nothing. Exits 4 when the guard refuses the SQL (the plan then holds no SQL, only the reason), 3 when
                the connection, the transport's tool or their pairing is unusable, else 0.
@@ -477,6 +480,18 @@ def writable_ok(name):
     return bool(name and name.strip()) and ("*" in names or name.strip().casefold() in names)
 
 
+def run_prefix():
+    """The start of the command that runs this read.py with --allow-writable-login, as the allow rules match it:
+    python3, this file's own path, quoted, with forward slashes, then query and the flag."""
+    return f'python3 "{Path(__file__).resolve().as_posix()}" query --allow-writable-login'
+
+
+def allow_rules():
+    """The allow rules for the user's settings: run_prefix() then a wildcard, and nothing else wild, since a * before
+    the subcommand would approve whatever options stood there."""
+    return [f"{tool}({run_prefix()} *)" for tool in ("Bash", "PowerShell")]
+
+
 def _blank(command=None, code=0, error=None):
     plan = dict.fromkeys(PLAN_KEYS)
     plan.update(command=command, exit=code, error=error)
@@ -850,6 +865,8 @@ def _parser():
     listing = commands.add_parser("connections", parents=[common], allow_abbrev=False,
                                   help="list the saved connections")
     listing.add_argument("--json", action="store_true", help="print them as JSON")
+    commands.add_parser("rules", allow_abbrev=False,
+                        help="print the allow rules for query --allow-writable-login, with this read.py's path")
     for name, summary in (("plan", "print what query or check would run, as JSON; run nothing"),
                           ("check", "list what the login can write"), ("query", "run one SELECT")):
         command = commands.add_parser(name, parents=[common], allow_abbrev=False, help=summary)
@@ -891,6 +908,11 @@ def main(argv=None):
             return _list(opts)
         if opts.command == "plan":
             return _show(opts)
+        if opts.command == "rules":
+            _say(json.dumps({"permissions": {"allow": allow_rules()}}, indent=2, ensure_ascii=True), sys.stdout)
+            _say("sql-read: add these to the permissions.allow list of your Claude Code settings; they let query "
+                 "--allow-writable-login past auto mode's classifier, and the hook still asks for every run")
+            return 0
         return _go(opts)
     except Unusable as e:
         _say(f"sql-read: {_visible(e)}")
@@ -910,7 +932,8 @@ def _show(opts):
         _say(f"sql-read: {_visible(plan['error'])}")
     elif plan["command"] == "query" and not plan["allow_writable_login"] and writable_ok(plan["connection"]):
         _say(f"sql-read: {_visible(plan['connection'])} is listed in {WRITABLE_OK}: if its login can write, run it as "
-             "query --allow-writable-login --cx ..., the flag first; the prompt will say the connection is listed")
+             f"{run_prefix()} --cx ... with the plan's other options; the prompt will say the connection is listed, "
+             "and the allow rules read.py rules prints match that form")
     return plan["exit"]
 
 
