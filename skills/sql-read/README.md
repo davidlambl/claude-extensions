@@ -64,12 +64,15 @@ When a connection has no login that can only read, you can let it run with the o
 
 The variable changes nothing that runs. It is your leave for Claude to pass `--allow-writable-login` for those connections: `plan` says when a connection is listed, and only that flag, on the command line the hook reads, leaves the probe out. So the prompt always knows: it shows `⚠ writable login allowed (listed in env SQL_READ_WRITABLE_OK)`, or `(NOT listed …)` when the flag comes without your leave, as the hook's own environment has it. The guard still refuses anything but one SELECT, every run still asks, and `check` still probes. The hook asks with "could not read" when a command line sets the variable itself. With the flag, the guard and your approval are all that stand between the SQL and a write.
 
-In auto mode the classifier refuses the flag as a safety bypass, since it cannot see your setting. To let it through to the hook's prompt, add allow rules for the one form Claude uses, the flag first:
+In auto mode the classifier refuses the flag as a safety bypass, since it cannot see your setting. To let it through to the hook's prompt, add allow rules for the one form Claude uses: `read.py` by its full path, quoted as Claude types it, then the flag first. A `*` goes only at the end. One before the subcommand, as in `*read.py*`, would also approve whatever options stand there, and Claude Code warns of it.
 
 ```json
-{ "permissions": { "allow": ["Bash(python3 *read.py* query --allow-writable-login *)",
-                             "PowerShell(python3 *read.py* query --allow-writable-login *)"] } }
+{ "permissions": { "allow": [
+  "Bash(python3 \"C:/path/to/sql-read/skills/sql-read/scripts/read.py\" query --allow-writable-login *)",
+  "PowerShell(python3 \"C:/path/to/sql-read/skills/sql-read/scripts/read.py\" query --allow-writable-login *)"] } }
 ```
+
+Use the path `plan` shows Claude, which is where the plugin is installed. After an update moves the plugin, the rule needs the new path.
 
 The rule only takes the classifier out of the way: the hook still asks for every run, with the plan and the warning, and an ask beats an allow. Claude never adds this rule; it is yours to add.
 
