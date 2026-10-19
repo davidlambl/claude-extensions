@@ -189,7 +189,7 @@ class Reads(GateCase):
         self.asks_each([command], equals="\n".join([
             f'sql-read: read on "Dev" {DASH} localhost / Scratch',
             f"no row cap {DOT} 2.5 s timeout {DOT} lock timeout 1.5 s", "| SELECT TOP 20 *", "| FROM dbo.Orders",
-            f"{WARN} writable login allowed", f"{WARN} no row cap", "NOLOCK (dirty reads)"]))
+            f"{WARN} writable login allowed (NOT listed in env SQL_READ_WRITABLE_OK)", f"{WARN} no row cap", "NOLOCK (dirty reads)"]))
 
     def test_the_first_eight_lines_of_the_sql(self):
         reason = self.asks(f'{RUN} query --cx Sales --sql "{self.p("long.sql")}"')

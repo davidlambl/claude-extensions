@@ -468,9 +468,11 @@ class _TooBig(Exception):
 
 
 def writable_ok(name):
-    """Whether env SQL_READ_WRITABLE_OK lets connection name run with a login that can write: the variable holds
-    connection names, comma-separated and compared as --cx is (trimmed, case-insensitive), or * for every one. The
-    user sets it, in Claude Code's settings or the shell; the guard and the approval prompt still apply."""
+    """Whether env SQL_READ_WRITABLE_OK lists connection name as one whose login the user lets write: the variable
+    holds connection names, comma-separated and compared as --cx is (trimmed, case-insensitive), or * for every one.
+    It changes nothing that runs. Only --allow-writable-login, on the command line the gate reads, leaves the probe
+    out; the variable is the user's leave for Claude to pass that flag, and the prompt says, as the gate's own
+    environment has it, whether the connection is listed."""
     names = {part.strip().casefold() for part in os.environ.get(WRITABLE_OK, "").split(",") if part.strip()}
     return bool(name and name.strip()) and ("*" in names or name.strip().casefold() in names)
 
@@ -490,7 +492,7 @@ def _plan(opts, cwd, runs=False):
     plan.update(transport=opts.via, connection=opts.cx, timeout=opts.timeout)
     if query:
         plan.update(max_rows=opts.max_rows, lock_timeout_ms=opts.lock_timeout, nolock=opts.nolock,
-                    allow_writable_login=opts.allow_writable_login or writable_ok(opts.cx), format=opts.format)
+                    allow_writable_login=opts.allow_writable_login, format=opts.format)
         path = _local(opts.sql, cwd)
         out, name = path.parent / "sql-read", _default_name(path.stem)
         try:
@@ -753,7 +755,8 @@ def _excerpt(sql):
 def _warnings(plan):
     warnings = []
     if plan.get("allow_writable_login"):
-        warnings.append("\u26a0 writable login allowed" + (f" by env {WRITABLE_OK}" if writable_ok(plan.get("connection")) else ""))
+        listed = "listed" if writable_ok(plan.get("connection")) else "NOT listed"
+        warnings.append(f"\u26a0 writable login allowed ({listed} in env {WRITABLE_OK})")
     if plan.get("command") == "query" and plan.get("max_rows") == 0:
         warnings.append("\u26a0 no row cap")
     if plan.get("nolock"):
@@ -905,6 +908,9 @@ def _show(opts):
     _say(json.dumps(plan, indent=2, ensure_ascii=True), sys.stdout)
     if plan["exit"]:
         _say(f"sql-read: {_visible(plan['error'])}")
+    elif plan["command"] == "query" and not plan["allow_writable_login"] and writable_ok(plan["connection"]):
+        _say(f"sql-read: {_visible(plan['connection'])} is listed in {WRITABLE_OK}: if its login can write, run query "
+             "with --allow-writable-login; the prompt will say the connection is listed")
     return plan["exit"]
 
 
