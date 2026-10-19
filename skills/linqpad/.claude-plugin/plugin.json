@@ -1,0 +1,10 @@
+{
+  "name": "linqpad",
+  "version": "0.1.0",
+  "description": "Runs C# and .NET code with LINQPad 9's lprun9, as a .NET 10 file-based app or a .linq script, and asks before any run that touches a saved LINQPad connection.",
+  "author": { "name": "David Lambl" },
+  "homepage": "https://github.com/davidlambl/claude-extensions/tree/main/skills/linqpad",
+  "repository": "https://github.com/davidlambl/claude-extensions",
+  "license": "MIT",
+  "keywords": ["linqpad", "lprun", "csharp", "dotnet", "scripting", "hooks"]
+}

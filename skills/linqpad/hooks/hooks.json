@@ -1,0 +1,19 @@
+{
+  "description": "Asks before any lprun9 run that touches a saved LINQPad connection",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          { "type": "command", "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/gate.py"], "if": "Bash(*un9*)", "timeout": 10, "onFailure": "block" },
+          { "type": "command", "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/gate.py"], "if": "Bash(*uN9*)", "timeout": 10, "onFailure": "block" },
+          { "type": "command", "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/gate.py"], "if": "Bash(*Un9*)", "timeout": 10, "onFailure": "block" },
+          { "type": "command", "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/gate.py"], "if": "Bash(*UN9*)", "timeout": 10, "onFailure": "block" },
+          { "type": "command", "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/gate.py"], "if": "Bash(*.linq*)", "timeout": 10, "onFailure": "block" },
+          { "type": "command", "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/gate.py"], "if": "PowerShell(*lprun9*)", "timeout": 10, "onFailure": "block" },
+          { "type": "command", "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/gate.py"], "if": "PowerShell(*.linq*)", "timeout": 10, "onFailure": "block" }
+        ]
+      }
+    ]
+  }
+}

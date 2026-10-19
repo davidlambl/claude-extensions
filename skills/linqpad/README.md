@@ -1,0 +1,112 @@
+# LINQPad
+
+Runs C# and .NET code from the command line with LINQPad 9's `lprun9`, as a .NET 10 file-based app or as a `.linq` script, and asks you before any `lprun9` run that touches a saved LINQPad connection.
+
+It comes as a skill: ask Claude to check how some C# behaves, or to run a `.linq` script, and it writes the code to a file in its scratch folder, runs it, and answers from what it printed. Reading from a database through a saved connection is the job of [sql-read](../sql-read/), which previews the SQL and checks the login on every run.
+
+## How it works
+
+1. The skill writes a file-based app, a `.cs` file of top-level statements that needs no project, and runs it with `lprun9 <absolute path>`. The same file runs with `dotnet run <path>.cs` wherever the .NET 10 SDK is. It writes a `.linq` script instead when it needs what only LINQPad has: `Dump()`, an Expression one-liner, or your own script's saved connection.
+2. `hooks/gate.py` is a PreToolUse hook on the Bash and PowerShell tools. It reads each command that names `lprun9` or a `.linq` file, and asks you before one that runs `lprun9` with `-cxname=`, or on a script whose first 8 KB hold a `<Connection>`. The prompt names the connection:
+
+   ```
+   linqpad: lprun9 against saved connection "Sales" — not through sql-read: no shape check, no row cap, no login probe
+   ```
+
+## Write a script
+
+A file-based app runs as it is, and a `#:package` line brings in a NuGet package:
+
+```csharp
+#:package Humanizer.Core@2.14.1
+using Humanizer;
+
+Console.WriteLine(Math.Round(2.5));               // 2: a midpoint rounds to even
+Console.WriteLine("file_based_app".Humanize());   // file based app
+```
+
+```sh
+lprun9 "C:/Users/me/AppData/Local/Temp/round.cs"
+dotnet run "C:/Users/me/AppData/Local/Temp/round.cs"
+```
+
+A `.linq` script starts with its header, an XML element, and a blank line:
+
+```
+<Query Kind="Program">
+  <NuGetReference>Humanizer.Core</NuGetReference>
+  <Namespace>Humanizer</Namespace>
+</Query>
+
+void Main(string[] args)
+{
+#if CMD
+    Console.WriteLine($"lprun9 passed {args.Length} arguments");
+#endif
+    "file_based_app".Humanize().Dump();
+}
+```
+
+- `Kind` is the language: `Expression`, `Statements` or `Program` for C#, or `VBExpression`, `VBStatements`, `VBProgram`, `FSharpExpression`, `FSharpProgram`, `SQL` or `ESQL`. A script with no header needs `-lang=` with one of those, or `E`, `S` or `P` for short.
+- In a `Program`, `void Main(string[] args)` gets the arguments written after the script's path: `lprun9 C:/scripts/report.linq 2026-10 Sales`.
+- `#if CMD` holds when lprun9 runs the script, and not in LINQPad's editor.
+- `Dump()` writes to stdout as text, the default `-format`; an array comes out as JSON-like lines.
+- A NuGet package, from `#:package` or `<NuGetReference>`, is fetched on the script's first run, which takes longer than the runs after it. A `.cs` file's first `dotnet run` also compiles it.
+- A `<Connection>` element in the header points the script at a saved connection, and the hook asks before every run of it.
+
+## The traps
+
+lprun9 9.11.10, as tested:
+
+| You might try | What happens | Instead |
+| --- | --- | --- |
+| Inline code, `lprun9 -lang=e "2 + 2"` | `Unable to locate file '2 + 2'`: a script file is mandatory | Write the code to a file |
+| `-format=json` | `Valid values are: Text, HTML, HTMLFrag, CSV, CSVi`. Text is the default | Serialize inside the script, with `System.Text.Json.JsonSerializer` |
+| A `.linq` with no header | `You must specify a language` | Write a `<Query Kind="…">` header, or pass `-lang=` |
+| A relative path, `lprun9 round.linq` | Looked for in the current folder, then in LINQPad's My Scripts folder, which may be a network share | Pass the absolute path |
+| `-compileonly` as a dry run of a SQL script with `-cxname=` | It blocked for over two minutes and was killed | It is no dry run: never point it at a connection |
+| `-cxname=` with a connection that has no display name | Unnamed connections are ambiguous, so it cannot be chosen | Give it a name in LINQPad |
+
+An error goes to stderr, and lprun9 exits with a code other than 0.
+
+## Use it
+
+Install it from a Claude Code prompt in a terminal:
+
+```
+/plugin install linqpad --marketplace davidlambl/claude-extensions
+```
+
+Answer `y` to add the marketplace, then choose a scope.
+
+Requirements: LINQPad 9 with `lprun9` on the `PATH` (it installs as `C:\Program Files\LINQPad9\LPRun9.exe`), or the .NET 10 SDK for `dotnet run`; and Python 3.11 or later as `python3` on the `PATH`, for the hook. Built and tested on Windows 11, with LINQPad 9.11.10 and the .NET 10 SDK.
+
+To make the prompt a guarantee rather than a hook, add ask rules to your user settings, `~/.claude/settings.json`:
+
+```json
+{
+  "permissions": {
+    "ask": ["Bash(*un9*)", "Bash(*uN9*)", "Bash(*Un9*)", "Bash(*UN9*)", "PowerShell(*lprun9*)",
+            "Bash(*read.py*query*)", "Bash(*read.py*check*)", "PowerShell(*read.py*query*)",
+            "PowerShell(*read.py*check*)", "Bash(*m read *query*)", "Bash(*m read *check*)",
+            "PowerShell(*m read *query*)", "PowerShell(*m read *check*)", "Bash(*mread *query*)",
+            "Bash(*mread *check*)", "PowerShell(*mread *query*)", "PowerShell(*mread *check*)"]
+  }
+}
+```
+
+The first five cover `lprun9`; the other twelve cover sql-read's runs (its README says which forms), and cost nothing without it. Whether a Bash pattern ignores letter case is not documented, so the four Bash rules spell `un9` in each of its casings: together they match `lprun9` however it is written, `LPRUN9.EXE` and `C:/PROGRA~1/LINQPAD9/LPRUN9.EXE` included, where `Bash(*lprun9*)` alone would miss both if Bash patterns keep case. They also prompt for any other Bash command that holds those letters, such as `git log --grep=run9`. A PowerShell pattern ignores case, so one rule covers it. An ask rule prompts even in auto mode, and even for a command inside `cd x && …` or `$(…)`, and it holds with the plugin disabled. It cannot read a script, so it prompts for every `lprun9` run, a scratch `.cs` file included; `dotnet run` runs one without a prompt. The hook adds what a rule cannot: which connection the run touches.
+
+## What it costs and touches
+
+- **It runs code on your machine, as you.** What the script does, it does. Scripts go in Claude's scratch folder unless you say otherwise.
+- **The hook asks before `lprun9` touches a saved connection:** a run with `-cxname=`, or of a script whose first 8 KB hold a `<Connection>`, read from the path resolved against the session's folder. It finds `lprun9` in any letter case, with or without a folder, and behind `timeout`, `env`, `cmd /c`, `Start-Process` and the like. A command that does not run `lprun9` is silent, so `cat q.linq`, `type q.linq` and `code q.linq` never prompt. A run it cannot read, such as a quote that does not close, a path in a variable or a script that is not there, asks too, with `linqpad: the gate could not read this command; approve only if you have read the SQL`.
+- **With nobody to ask, it refuses.** In the `bypassPermissions` and `dontAsk` modes each ask becomes a deny, with the same reason.
+- **It is a speed bump, not a boundary.** A script's own code can open a connection with a connection string, and a command can be disguised past what the hook reads. Claude Code calls an `if` pattern best-effort, and runs the hook anyway when it cannot parse the command. Whether a Bash pattern ignores letter case is not documented, so the Bash handlers match `un9` in its four casings (`*un9*`, `*uN9*`, `*Un9*` and `*UN9*`), which together catch `lprun9` in any letter case, `LPRUN9.EXE` included, even if a Bash pattern keeps the case written; a PowerShell pattern ignores case, so one handler matches `lprun9` there. The `.linq` handlers catch a run of a `.linq` file however the program is spelled. A mod that handles `tool.check` can approve past the hook. The ask rules above are the guarantee.
+- **Its cost is one Python start, about a quarter of a second, and only for a command that names a `.linq` or, in Bash, holds `un9` in any letter case (in PowerShell, `lprun9`).** Each handler carries an `if` pattern, so any other command starts nothing, and a Bash command that holds `un9` without running `lprun9`, such as `git log --grep=run9`, starts the hook and is let through silently. A command that matches two handlers, such as `lprun9 x.linq`, still gives one prompt.
+- **A failed hook blocks the command.** If the hook crashes, overruns its 10-second timeout, or finds no `python3` on the `PATH`, Claude Code blocks the command (`onFailure: "block"`), so a broken hook never lets a run through unasked. That applies only to the commands that start the hook, those above. The hook is started with no shell, so `python3` must be a program on the `PATH`; a Git Bash alias does not count.
+- **It leaves LINQPad's own files alone.** The hook reads only the scripts a command names, and the skill tells Claude never to open `ConnectionsV2.xml`, where LINQPad keeps your connections and their passwords.
+
+## Dependencies
+
+Python's standard library, for the hook. LINQPad 9 for `lprun9`, or the .NET 10 SDK for `dotnet run`.
