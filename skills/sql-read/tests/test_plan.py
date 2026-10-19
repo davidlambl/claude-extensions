@@ -700,7 +700,7 @@ class Reason(Harness):
     def test_the_warnings_come_last(self):
         lines = self.reason("SELECT 1 AS x", "--allow-writable-login", "--max-rows", "0", "--nolock")
         self.assertEqual(lines[1], "no row cap \u00b7 60 s timeout \u00b7 lock timeout 5 s")
-        self.assertEqual(lines[-3:], ["\u26a0 writable login allowed", "\u26a0 no row cap", "NOLOCK (dirty reads)"])
+        self.assertEqual(lines[-3:], ["\u26a0 writable login allowed (NOT listed in env SQL_READ_WRITABLE_OK)", "\u26a0 no row cap", "NOLOCK (dirty reads)"])
         self.assertEqual(len(self.reason("SELECT 1 AS x")), 3)
 
     def test_a_check(self):
@@ -923,8 +923,9 @@ class Process(unittest.TestCase):
 
 
 class WritableOk(Harness):
-    """env SQL_READ_WRITABLE_OK, set by the user, lets the connections it names run with a login that can write: the
-    probe is left out of the batch, and the prompt says why. The guard still holds, and check still probes."""
+    """env SQL_READ_WRITABLE_OK, set by the user, names the connections whose login may write. It never changes what
+    runs: only --allow-writable-login, on the command line the gate reads, leaves the probe out. The variable lets
+    Claude pass that flag, and the prompt says whether the connection is listed, as the gate's own environment has it."""
 
     def setUp(self):
         super().setUp()
@@ -936,54 +937,48 @@ class WritableOk(Harness):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def allowed(self, cx="Sales"):
-        code, plan, _ = self.plan("--cx", cx, "--sql", self.sql)
-        self.assertEqual(code, 0)
-        return plan["allow_writable_login"]
+    def reason(self, cx, *options):
+        return read.reason(read.plan_for_command(["query", "--cx", cx, "--sql", str(self.sql), *options])).split("\n")
 
-    def test_unset_the_probe_stays(self):
-        os.environ.pop("SQL_READ_WRITABLE_OK", None)
-        self.assertFalse(self.allowed())
-
-    def test_a_listed_connection_runs_without_the_probe(self):
-        self.env(" web-prod , SALES ")
-        self.assertTrue(self.allowed("Sales"))
-        self.assertTrue(self.allowed("  sales "))
-        self.assertFalse(self.allowed("Dev"))
-        code, _, _ = self.main("query", "--cx", "Sales", "--sql", self.sql)
-        self.assertEqual(code, 0)
-        self.assertNotIn(read.PROBE, self.transport.calls[-1]["batch"])
-        self.main("query", "--cx", "Dev", "--sql", self.sql)
+    def test_the_variable_alone_leaves_the_probe_in(self):
+        self.env("*")
+        code, plan, _ = self.plan("--cx", "Sales", "--sql", self.sql)
+        self.assertEqual((code, plan["allow_writable_login"]), (0, False))
+        self.assertEqual(self.main("query", "--cx", "Sales", "--sql", self.sql)[0], 0)
         self.assertIn(read.PROBE, self.transport.calls[-1]["batch"])
 
-    def test_a_star_covers_every_connection(self):
-        self.env("*")
-        self.assertTrue(self.allowed("Dev"))
+    def test_the_flag_leaves_it_out_listed_or_not(self):
+        os.environ.pop("SQL_READ_WRITABLE_OK", None)
+        self.main("query", "--cx", "Sales", "--sql", self.sql, "--allow-writable-login")
+        self.assertNotIn(read.PROBE, self.transport.calls[-1]["batch"])
 
-    def test_an_empty_or_blank_list_covers_none(self):
+    def test_listed_matches_as_cx_does(self):
+        self.env(" web-prod , SALES ")
+        self.assertTrue(read.writable_ok("Sales"))
+        self.assertTrue(read.writable_ok("  sales "))
+        self.assertFalse(read.writable_ok("Dev"))
+        self.env("*")
+        self.assertTrue(read.writable_ok("Dev"))
         for value in ("", " , ", ","):
             with self.subTest(value=value):
                 self.env(value)
-                self.assertFalse(self.allowed())
+                self.assertFalse(read.writable_ok("Sales"))
 
-    def test_the_guard_still_refuses_a_write(self):
-        self.env("*")
-        code, plan, _ = self.plan("--cx", "Sales", "--sql", self.sql_file("UPDATE dbo.Orders SET x = 1", "w.sql"))
-        self.assertEqual(code, 4)
-
-    def test_check_still_probes(self):
-        self.env("*")
-        code, plan, _ = self.plan("--cx", "Sales")
-        self.assertEqual(plan["command"], "check")
-        self.assertFalse(plan["allow_writable_login"])
-
-    def test_the_prompt_names_the_variable(self):
+    def test_the_prompt_says_whether_the_connection_is_listed(self):
         self.env("Sales")
-        reason = read.reason(read.plan_for_command(["query", "--cx", "Sales", "--sql", str(self.sql)]))
-        self.assertIn("⚠ writable login allowed by env SQL_READ_WRITABLE_OK", reason.split("\n"))
-        flagged = read.reason(read.plan_for_command(["query", "--cx", "Dev", "--sql", str(self.sql),
-                                                      "--allow-writable-login"]))
-        self.assertIn("⚠ writable login allowed", flagged.split("\n"))
+        self.assertIn("\u26a0 writable login allowed (listed in env SQL_READ_WRITABLE_OK)",
+                      self.reason("Sales", "--allow-writable-login"))
+        self.assertIn("\u26a0 writable login allowed (NOT listed in env SQL_READ_WRITABLE_OK)",
+                      self.reason("Dev", "--allow-writable-login"))
+        self.assertFalse([line for line in self.reason("Sales") if "writable" in line])
+
+    def test_plan_says_when_a_listed_connection_may_take_the_flag(self):
+        self.env("Sales")
+        _, _, err = self.plan("--cx", "Sales", "--sql", self.sql)
+        self.assertIn("listed in SQL_READ_WRITABLE_OK", err)
+        self.assertIn("--allow-writable-login", err)
+        _, _, err = self.plan("--cx", "Dev", "--sql", self.sql)
+        self.assertNotIn("SQL_READ_WRITABLE_OK", err)
 
 
 if __name__ == "__main__":
