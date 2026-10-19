@@ -24,6 +24,20 @@
       "description": "Posts images with captions as a markdown comment on an Azure DevOps work item, or revises one already posted, and checks that every image rendered.",
       "category": "skill",
       "tags": ["azure-devops", "work-items", "evidence", "screenshots", "testing"]
+    },
+    {
+      "name": "linqpad",
+      "source": "./skills/linqpad",
+      "description": "Runs C# and .NET code with LINQPad 9's lprun9, as a .NET 10 file-based app or a .linq script, and asks before any run that touches a saved LINQPad connection.",
+      "category": "skill",
+      "tags": ["linqpad", "lprun", "csharp", "dotnet", "scripting"]
+    },
+    {
+      "name": "sql-read",
+      "source": "./skills/sql-read",
+      "description": "Reads from a SQL Server database through a saved LINQPad connection, production included: one SELECT per run, previewed as a plan, refused when the login can write, and approved at a prompt every time.",
+      "category": "skill",
+      "tags": ["sql-server", "sql", "linqpad", "database", "read-only", "production"]
     }
   ]
 }
