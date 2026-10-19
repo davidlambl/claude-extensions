@@ -38,7 +38,7 @@ Install it from a Claude Code prompt in a terminal:
 
 Answer `y` to add the marketplace, then choose a scope.
 
-Requirements: LINQPad 9 with `lprun9`, and the connections saved in it, each with a name; Python 3.11 or later as `python3` on the `PATH`; and, for each connection, a login that can only read. Built on Windows 11 with LINQPad 9.11.10. The tests run offline, on Windows and on Linux, with lprun9 faked.
+Requirements: LINQPad 9 with `lprun9`, and the connections saved in it, each with a name; Python 3.11 or later as `python3` on the `PATH`; and, for each connection, a login that can only read, or the connection listed in `SQL_READ_WRITABLE_OK` (below). Built on Windows 11 with LINQPad 9.11.10. The tests run offline, on Windows and on Linux, with lprun9 faked.
 
 To make the prompt hold without the hook, add ask rules to your user settings, `~/.claude/settings.json`:
 
@@ -55,6 +55,14 @@ To make the prompt hold without the hook, add ask rules to your user settings, `
 ```
 
 The twelve `query` and `check` rules cover those two commands, whichever transport runs them, in each form the hook itself catches: `read.py` by its path, `python3 -m read` or `-mread` (from the scripts folder or with `PYTHONPATH`), and a quoted command such as `'query'`. They match the command's text, not what it does, so they miss a copy or a rename of `read.py`, as in `cp read.py r.py && python3 r.py query`, a script or an alias that runs it, and, from Bash, a name spelled in other letter case, such as `READ.PY`. The hook asks for the copy. The five `lprun9` rules make every other run of lprun9 prompt too: a Bash pattern matches only the letter case it is written in, so the four Bash ones spell `un9` in each casing, which catches `LPRUN9.EXE` and `C:/PROGRA~1/LINQPAD9/LPRUN9.EXE` and also prompts for any other Bash command holding those letters; since `lprun9 -cxname=` reaches the same connections with none of these checks; that includes a run that touches no connection. An ask rule prompts even in auto mode, and even for a command inside `cd x && …` or `$(…)`, and it holds with the plugin disabled. `read.py plan` and `read.py connections` match none of them unless an argument holds the word `query` or `check`, as a `--sql query.sql` would, so a read prompts once. The hook adds what a rule cannot: the plan, with the SQL.
+
+When a connection has no login that can only read, you can let it run with the one it has. List it in `SQL_READ_WRITABLE_OK`, in the `env` of your Claude Code settings: connection names, comma-separated and matched as `--cx` is, or `*` for every connection.
+
+```json
+{ "env": { "SQL_READ_WRITABLE_OK": "Web-Prod, Sales" } }
+```
+
+`query` then leaves out the probe for those connections. The guard still refuses anything but one SELECT, and every run still asks, with the line `⚠ writable login allowed by env SQL_READ_WRITABLE_OK` in the prompt. `check` still probes and still reports what the login can write. The hook asks with "could not read" when a command line sets the variable itself, so Claude cannot switch the override on. With the override, the guard and your approval are all that stand between the SQL and a write.
 
 ```sh
 python3 skills/sql-read/skills/sql-read/scripts/read.py connections
@@ -79,7 +87,7 @@ python3 skills/sql-read/skills/sql-read/scripts/read.py check --cx Sales
 | `--timeout S` | Seconds before the run is stopped, above 0 and at most 86400; 60 by default. |
 | `--lock-timeout MS` | Milliseconds a read waits for a lock before it fails; 5000 by default. |
 | `--nolock` | Reads uncommitted rows rather than wait for locks: dirty reads. |
-| `--allow-writable-login` | Leaves out the probe that stops the run when the login can write. |
+| `--allow-writable-login` | Leaves out the probe that stops the run when the login can write. A connection listed in the environment variable `SQL_READ_WRITABLE_OK` runs without it too. |
 | `--out DIR` | Where the run's `.linq` file goes. By default a `sql-read` folder beside the `--sql` file, for `check`, a `sql-read` folder in the temp folder. Whatever the folder, the run replaces only a `.linq` that sql-read wrote: if anything else is at `<out>/<name>.linq`, a query you saved there included, it is left as it is and the run exits 3 with nothing run. |
 | `--name NAME` | The `.linq` file's name, without extension: letters, digits, `.`, `_` and `-`. By default the `--sql` file's name, and `check` for `check`. |
 | `--connections FILE` | The connection list. By default the file the environment variable `SQL_READ_CONNECTIONS` names, else `%APPDATA%\LINQPad\ConnectionsV2.xml`. |
@@ -116,7 +124,7 @@ Rows are counted with Python's `csv` module, as the records after the header, fo
 SET NOCOUNT ON;
 SET LOCK_TIMEOUT 5000;                                   -- --lock-timeout
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;        -- only with --nolock
-IF IS_SRVROLEMEMBER('sysadmin') = 1                      -- the probe, left out only with --allow-writable-login
+IF IS_SRVROLEMEMBER('sysadmin') = 1                      -- the probe, left out with --allow-writable-login or SQL_READ_WRITABLE_OK
    OR IS_MEMBER('db_owner') = 1 OR IS_MEMBER('db_datawriter') = 1 OR IS_MEMBER('db_ddladmin') = 1
    OR EXISTS (SELECT 1 FROM sys.fn_my_permissions(NULL, 'DATABASE') WHERE permission_name IN
       ('INSERT','UPDATE','DELETE','ALTER','CONTROL','CREATE TABLE','CREATE PROCEDURE','CREATE FUNCTION',
@@ -170,7 +178,7 @@ These pass: `CASE … WHEN … END`, `WITH (NOLOCK)`, `OPTION (RECOMPILE)` and t
 ## What it costs and touches
 
 - **It runs real reads, production included,** through your saved connection and as its login. A read can be slow or wait on locks: the timeout, the lock timeout and the row cap bound it, and `--nolock` trades the wait for dirty reads.
-- **The login is the boundary.** The guard checks the SQL's shape and the probe checks the login's rights; neither makes a login read-only. With a login that can only read, nothing they miss can write.
+- **The login is the boundary.** The guard checks the SQL's shape and the probe checks the login's rights; neither makes a login read-only. With a login that can only read, nothing they miss can write. A connection listed in `SQL_READ_WRITABLE_OK`, or run with `--allow-writable-login`, gives that up: there only the guard and the prompt stand in the way.
 - **The probe sees roles and database-wide permissions, not grants on single objects.** It looks for the server role `sysadmin`, the database roles `db_owner`, `db_datawriter` and `db_ddladmin`, and the database permissions the batch lists. A login granted `UPDATE` on one table passes it. On Azure SQL `IS_SRVROLEMEMBER` returns 0 or NULL, so there the database roles and permissions carry the check. `check` has the same reach.
 - **The password stays LINQPad's.** The connection list's `Password` element is never printed, logged or written, and is not in `--json`, the plan, a message, or the `.linq` file, which names the connection only. LINQPad encrypts a stored password for your Windows user, so any process running as you can use it, another SQL client included. There the login's permissions are the only boundary.
 - **Each run writes one `.linq` file**, the header and the batch, to the `--out` folder. The results are written nowhere: they are business data, and go to stdout only.

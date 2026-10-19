@@ -588,6 +588,10 @@ class CouldNotRead(GateCase):
                        tools=["PowerShell"], starts=UNREAD, has=", which the plan reads")
         self.asks_each([f"SQL_READ_CONNECTIONS=/x/c.xml {run}"], tools=["Bash"],
                        equals=unread("the line changes SQL_READ_CONNECTIONS, which the plan reads"))
+        self.asks_each([f"SQL_READ_WRITABLE_OK=Sales {run}", f"export SQL_READ_WRITABLE_OK='*'; {run}"],
+                       tools=["Bash"], starts=UNREAD, has="SQL_READ_WRITABLE_OK, which the plan reads")
+        self.asks_each([f"$env:SQL_READ_WRITABLE_OK = '*'; {run}"], tools=["PowerShell"], starts=UNREAD,
+                       has="SQL_READ_WRITABLE_OK, which the plan reads")
         self.asks_each([f"PYTHONPATH=/x {run}", f"export PYTHONHOME=/x; {run}"], tools=["Bash"], starts=UNREAD,
                        has="which changes how python runs read.py")
         self.asks_each([f"$env:PYTHONPATH = 'x'; {run}"], tools=["PowerShell"], starts=UNREAD,

@@ -922,5 +922,69 @@ class Process(unittest.TestCase):
         self.assertIn(b"DELETE", proc.stderr)
 
 
+class WritableOk(Harness):
+    """env SQL_READ_WRITABLE_OK, set by the user, lets the connections it names run with a login that can write: the
+    probe is left out of the batch, and the prompt says why. The guard still holds, and check still probes."""
+
+    def setUp(self):
+        super().setUp()
+        self.use()
+        self.sql = self.sql_file("SELECT TOP 5 * FROM dbo.Orders")
+
+    def env(self, value):
+        patcher = mock.patch.dict(os.environ, {"SQL_READ_WRITABLE_OK": value})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def allowed(self, cx="Sales"):
+        code, plan, _ = self.plan("--cx", cx, "--sql", self.sql)
+        self.assertEqual(code, 0)
+        return plan["allow_writable_login"]
+
+    def test_unset_the_probe_stays(self):
+        os.environ.pop("SQL_READ_WRITABLE_OK", None)
+        self.assertFalse(self.allowed())
+
+    def test_a_listed_connection_runs_without_the_probe(self):
+        self.env(" web-prod , SALES ")
+        self.assertTrue(self.allowed("Sales"))
+        self.assertTrue(self.allowed("  sales "))
+        self.assertFalse(self.allowed("Dev"))
+        code, _, _ = self.main("query", "--cx", "Sales", "--sql", self.sql)
+        self.assertEqual(code, 0)
+        self.assertNotIn(read.PROBE, self.transport.calls[-1]["batch"])
+        self.main("query", "--cx", "Dev", "--sql", self.sql)
+        self.assertIn(read.PROBE, self.transport.calls[-1]["batch"])
+
+    def test_a_star_covers_every_connection(self):
+        self.env("*")
+        self.assertTrue(self.allowed("Dev"))
+
+    def test_an_empty_or_blank_list_covers_none(self):
+        for value in ("", " , ", ","):
+            with self.subTest(value=value):
+                self.env(value)
+                self.assertFalse(self.allowed())
+
+    def test_the_guard_still_refuses_a_write(self):
+        self.env("*")
+        code, plan, _ = self.plan("--cx", "Sales", "--sql", self.sql_file("UPDATE dbo.Orders SET x = 1", "w.sql"))
+        self.assertEqual(code, 4)
+
+    def test_check_still_probes(self):
+        self.env("*")
+        code, plan, _ = self.plan("--cx", "Sales")
+        self.assertEqual(plan["command"], "check")
+        self.assertFalse(plan["allow_writable_login"])
+
+    def test_the_prompt_names_the_variable(self):
+        self.env("Sales")
+        reason = read.reason(read.plan_for_command(["query", "--cx", "Sales", "--sql", str(self.sql)]))
+        self.assertIn("⚠ writable login allowed by env SQL_READ_WRITABLE_OK", reason.split("\n"))
+        flagged = read.reason(read.plan_for_command(["query", "--cx", "Dev", "--sql", str(self.sql),
+                                                      "--allow-writable-login"]))
+        self.assertIn("⚠ writable login allowed", flagged.split("\n"))
+
+
 if __name__ == "__main__":
     unittest.main()
