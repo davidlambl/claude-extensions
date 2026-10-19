@@ -103,6 +103,11 @@ class Harness(unittest.TestCase):
             patcher = mock.patch.object(read, name, side_effect=AssertionError(f"read.{name} reached a real backend"))
             patcher.start()
             self.addCleanup(patcher.stop)
+        # The user's own SQL_READ_WRITABLE_OK must not change what the tests expect; a test that needs it sets it.
+        environ = mock.patch.dict(os.environ)
+        environ.start()
+        self.addCleanup(environ.stop)
+        os.environ.pop("SQL_READ_WRITABLE_OK", None)
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.dir = Path(temp.name)

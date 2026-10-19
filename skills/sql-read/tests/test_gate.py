@@ -90,6 +90,7 @@ class GateCase(unittest.TestCase):
         (cls.dir / "appdata" / "LINQPad" / "ConnectionsV2.xml").write_bytes(FIXTURE.read_bytes())
         cls.env = {**os.environ, "LPRUN9": str(cls.tool), "APPDATA": str(cls.dir / "appdata"),
                    "LOCALAPPDATA": str(cls.dir / "appdata")}
+        cls.env.pop("SQL_READ_WRITABLE_OK", None)  # the user's own setting must not change what the tests expect
         for name in ("PYTHONIOENCODING", "SQL_READ_CONNECTIONS"):
             cls.env.pop(name, None)
 
