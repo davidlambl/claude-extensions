@@ -1,0 +1,10 @@
+{
+  "name": "sql-read",
+  "version": "0.1.0",
+  "description": "Reads from a SQL Server database through a saved LINQPad connection, production included: one SELECT per run, previewed as a plan, refused when the login can write, and approved at a prompt every time.",
+  "author": { "name": "David Lambl" },
+  "homepage": "https://github.com/davidlambl/claude-extensions/tree/main/skills/sql-read",
+  "repository": "https://github.com/davidlambl/claude-extensions",
+  "license": "MIT",
+  "keywords": ["sql-server", "sql", "linqpad", "database", "read-only", "production", "hooks"]
+}

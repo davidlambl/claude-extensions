@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A stand-in for LINQPad's ConnectionsV2.xml, written by hand in the shape LINQPad 9 saves: no attributes, and each
+     connection's settings in LINQPad's order. Every host, name and ID is made up, and every secret is the same
+     obviously fake value, which no test may find in anything sql-read prints. -->
+<Connections>
+  <Connection>
+    <ID>00000000-0000-4000-8000-000000000001</ID>
+    <NamingServiceVersion>3</NamingServiceVersion>
+    <Persist>true</Persist>
+    <Server>sales-sql.database.windows.net</Server>
+    <AllowDateOnlyTimeOnly>true</AllowDateOnlyTimeOnly>
+    <UseMicrosoftDataSqlClient>true</UseMicrosoftDataSqlClient>
+    <EncryptTraffic>true</EncryptTraffic>
+    <DisplayName>Sales</DisplayName>
+    <DeferDatabasePopulation>true</DeferDatabasePopulation>
+    <Database>Product</Database>
+    <UniversalAuthentication>true</UniversalAuthentication>
+    <UserName>reader@example.com</UserName>
+    <Password>FAKE-pw-7f3a9c2e</Password>
+    <DbVersion>Azure</DbVersion>
+    <IsProduction>true</IsProduction>
+    <MapXmlToString>false</MapXmlToString>
+    <DriverData />
+    <SkipCertificateCheck>false</SkipCertificateCheck>
+  </Connection>
+  <Connection>
+    <ID>00000000-0000-4000-8000-000000000002</ID>
+    <NamingServiceVersion>3</NamingServiceVersion>
+    <Persist>true</Persist>
+    <Server>SQL-PROD-01.example.local</Server>
+    <AllowDateOnlyTimeOnly>true</AllowDateOnlyTimeOnly>
+    <UseMicrosoftDataSqlClient>true</UseMicrosoftDataSqlClient>
+    <EncryptTraffic>true</EncryptTraffic>
+    <SqlSecurity>true</SqlSecurity>
+    <DeferDatabasePopulation>true</DeferDatabasePopulation>
+    <UserName>web_reader</UserName>
+    <Password>FAKE-pw-7f3a9c2e</Password>
+    <IsProduction>true</IsProduction>
+    <MapXmlToString>false</MapXmlToString>
+    <DriverData />
+    <SkipCertificateCheck>true</SkipCertificateCheck>
+  </Connection>
+  <Connection>
+    <ID>00000000-0000-4000-8000-000000000003</ID>
+    <NamingServiceVersion>3</NamingServiceVersion>
+    <Persist>true</Persist>
+    <Server>SQL-PROD-01.example.local</Server>
+    <AllowDateOnlyTimeOnly>true</AllowDateOnlyTimeOnly>
+    <UseMicrosoftDataSqlClient>true</UseMicrosoftDataSqlClient>
+    <EncryptTraffic>true</EncryptTraffic>
+    <SqlSecurity>true</SqlSecurity>
+    <DisplayName>Web-Prod</DisplayName>
+    <DeferDatabasePopulation>true</DeferDatabasePopulation>
+    <Database>Web</Database>
+    <UniversalAuthentication>false</UniversalAuthentication>
+    <UserName>web_reader</UserName>
+    <Password>FAKE-pw-7f3a9c2e</Password>
+    <IsProduction>true</IsProduction>
+    <MapXmlToString>false</MapXmlToString>
+    <CustomCxString>Server=SQL-PROD-01.example.local;User ID=web_reader;Password=FAKE-pw-7f3a9c2e</CustomCxString>
+    <SettingFromALaterLINQPad>left unread</SettingFromALaterLINQPad>
+    <DriverData />
+    <SkipCertificateCheck>true</SkipCertificateCheck>
+  </Connection>
+  <Connection>
+    <ID>00000000-0000-4000-8000-000000000004</ID>
+    <NamingServiceVersion>3</NamingServiceVersion>
+    <Persist>true</Persist>
+    <Server>localhost</Server>
+    <AllowDateOnlyTimeOnly>true</AllowDateOnlyTimeOnly>
+    <UseMicrosoftDataSqlClient>true</UseMicrosoftDataSqlClient>
+    <EncryptTraffic>false</EncryptTraffic>
+    <SqlSecurity>false</SqlSecurity>
+    <DisplayName>Dev</DisplayName>
+    <DeferDatabasePopulation>true</DeferDatabasePopulation>
+    <Database>Scratch</Database>
+    <IsProduction>false</IsProduction>
+    <MapXmlToString>false</MapXmlToString>
+    <DriverData>
+      <Server>driver-setting.example.local</Server>
+      <DisplayName>Driver setting</DisplayName>
+      <Password>FAKE-pw-7f3a9c2e</Password>
+    </DriverData>
+    <SkipCertificateCheck>false</SkipCertificateCheck>
+  </Connection>
+</Connections>
