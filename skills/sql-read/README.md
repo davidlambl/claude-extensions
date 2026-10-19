@@ -64,6 +64,15 @@ When a connection has no login that can only read, you can let it run with the o
 
 The variable changes nothing that runs. It is your leave for Claude to pass `--allow-writable-login` for those connections: `plan` says when a connection is listed, and only that flag, on the command line the hook reads, leaves the probe out. So the prompt always knows: it shows `⚠ writable login allowed (listed in env SQL_READ_WRITABLE_OK)`, or `(NOT listed …)` when the flag comes without your leave, as the hook's own environment has it. The guard still refuses anything but one SELECT, every run still asks, and `check` still probes. The hook asks with "could not read" when a command line sets the variable itself. With the flag, the guard and your approval are all that stand between the SQL and a write.
 
+In auto mode the classifier refuses the flag as a safety bypass, since it cannot see your setting. To let it through to the hook's prompt, add allow rules for the one form Claude uses, the flag first:
+
+```json
+{ "permissions": { "allow": ["Bash(python3 *read.py* query --allow-writable-login *)",
+                             "PowerShell(python3 *read.py* query --allow-writable-login *)"] } }
+```
+
+The rule only takes the classifier out of the way: the hook still asks for every run, with the plan and the warning, and an ask beats an allow. Claude never adds this rule; it is yours to add.
+
 ```sh
 python3 skills/sql-read/skills/sql-read/scripts/read.py connections
 python3 skills/sql-read/skills/sql-read/scripts/read.py plan  --cx Sales --sql recent-orders.sql
