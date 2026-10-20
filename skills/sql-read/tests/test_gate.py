@@ -21,6 +21,7 @@ README = PLUGIN / "README.md"
 SCRIPTS = PLUGIN / "skills" / "sql-read" / "scripts"
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "connections.xml"
 LINQPAD_GATE = PLUGIN.parent / "linqpad" / "hooks" / "gate.py"  # keeps the same command-line reading
+LINQPAD_README = PLUGIN.parent / "linqpad" / "README.md"  # recommends the same ask rules
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 import read  # noqa: E402  (to make, in this process, the reason the gate should give)
@@ -59,6 +60,12 @@ def hook_ifs():
     """The `if` patterns of hooks.json, the ones that start the gate."""
     config = json.loads(HOOKS.read_text(encoding="utf-8"))
     return [h["if"] for group in config["hooks"]["PreToolUse"] for h in group["hooks"]]
+
+
+def ask_rules(readme):
+    """The ask rules a README's setup recommends, from its permissions block; None when it has no such block."""
+    block = re.search(r"```json\n(\{\s*\"permissions\".*?)```", readme.read_text(encoding="utf-8"), re.S)
+    return json.loads(block.group(1))["permissions"]["ask"] if block else None
 
 
 def load_gate():
@@ -446,14 +453,16 @@ class Silence(GateCase):
     def test_a_plain_command(self):
         self.silent_each(["npm test", "git status", "", "python3 -m unittest discover -s skills/sql-read/tests"])
 
-    def test_what_the_d_p_patterns_start_the_gate_for_passes_in_silence(self):
-        # The Bash handlers for read.py are the fragment d.p in four casings, so they start the gate for any Bash
+    def test_what_the_d_py_patterns_start_the_gate_for_passes_in_silence(self):
+        # The Bash handlers for read.py are the fragment d.py in eight casings, so they start the gate for any Bash
         # command that holds those letters, and the README names that cost. The gate lets each of these through.
-        for command in ["ls build.py", "python3 BUILD.PY", "open word.pdf", "python3 -c 'import pandas as pd; pd.pivot'"]:
+        for command in ["ls build.py", "python3 BUILD.PY", "python3 cmd.py"]:
             with self.subTest(command=command):
                 self.assertTrue(matches(hook_ifs(), "Bash", command), "no `if` pattern starts the gate")
                 self.silent(command)
-        for command in ["ls build.js", "git status", "open word.docx"]:
+        # A .pdf, a .ps1 and pandas' pd. hold d.p but not d.py, so none of these starts the gate at all.
+        for command in ["open word.pdf", "python3 -c 'import pandas as pd; pd.pivot'", "cmd.ps1", "ls build.js",
+                        "git status"]:
             with self.subTest(command=command):
                 self.assertFalse(matches(hook_ifs(), "Bash", command), "an `if` pattern starts the gate")
 
@@ -826,8 +835,9 @@ class HooksJson(unittest.TestCase):
     # Any command that names read.py, or runs a module named read, starts the gate, which decides; plan and
     # connections pass in silence
     # A Bash pattern matches the case written and Windows does not care how a file is cased, so the one for read.py is
-    # a short fragment of it, d.p, in each of its four casings.
-    IFS = ["Bash(*d.p*)", "Bash(*D.p*)", "Bash(*d.P*)", "Bash(*D.P*)", "Bash(*m read *)", "Bash(*mread *)",
+    # a short fragment of it, d.py, in each of its eight casings.
+    IFS = ["Bash(*d.py*)", "Bash(*d.pY*)", "Bash(*d.Py*)", "Bash(*d.PY*)",
+           "Bash(*D.py*)", "Bash(*D.pY*)", "Bash(*D.Py*)", "Bash(*D.PY*)", "Bash(*m read *)", "Bash(*mread *)",
            "PowerShell(*read.py*)", "PowerShell(*m read *)", "PowerShell(*mread *)"]
 
     def setUp(self):
@@ -889,10 +899,8 @@ class ReadmeAskRules(unittest.TestCase):
     and connections alone, so a read prompts once."""
 
     def setUp(self):
-        text = README.read_text(encoding="utf-8")
-        block = re.search(r"```json\n(\{\s*\"permissions\".*?)```", text, re.S)
-        self.assertIsNotNone(block, "the README's setup has no permissions block")
-        self.rules = json.loads(block.group(1))["permissions"]["ask"]
+        self.rules = ask_rules(README)
+        self.assertIsNotNone(self.rules, "the README's setup has no permissions block")
 
     def test_every_form_the_gate_runs_on_prompts(self):
         tail = "--cx Sales --sql q.sql"
@@ -918,6 +926,22 @@ class ReadmeAskRules(unittest.TestCase):
                               ("PowerShell", f"LPRun9.exe -cxname=Sales C:{BS}x{BS}fb.cs")]:
             with self.subTest(tool=tool, command=command):
                 self.assertTrue(matches(self.rules, tool, command))
+
+    def test_the_bash_read_py_rules_are_the_hooks_fragment_with_query_or_check(self):
+        """A Bash rule keeps its letter case as a Bash `if` pattern does, so the README's Bash rules for read.py are the
+        hook's eight d.py patterns with query or check after them, and nothing broader: a d.p rule would prompt for
+        `open word.pdf query`. linqpad's README recommends the same block."""
+        fragments = [p[len("Bash(*"):-len("*)")] for p in hook_ifs() if re.fullmatch(r"Bash\(\*d\.py\*\)", p, re.I)]
+        self.assertEqual(len(fragments), 8)
+        expected = [f"Bash(*{fragment}*{word}*)" for word in ("query", "check") for fragment in fragments]
+        readmes = [("sql-read", self.rules)]
+        if LINQPAD_README.is_file():
+            readmes.append(("linqpad", ask_rules(LINQPAD_README)))
+        for name, rules in readmes:
+            with self.subTest(readme=name):
+                self.assertEqual([r for r in rules if r.startswith("Bash(") and "." in r], expected)
+                self.assertTrue(matches(rules, "Bash", "python3 build.py query"))  # the cost the README names
+                self.assertFalse(matches(rules, "Bash", "open word.pdf query"))  # no longer paid for d.p
 
     def test_plan_and_connections_do_not_prompt(self):
         for tool in BOTH:
