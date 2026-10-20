@@ -38,7 +38,6 @@ WORTH_READING = re.compile(r"read\.py|-\w*m\s*read\b", re.I)
 
 SHELLS = {"Bash": "bash", "PowerShell": "powershell"}  # the hook's tool_name, and the shell its command is written for
 NOBODY_TO_ASK = frozenset({"bypassPermissions", "dontAsk"})  # permission modes in which an ask becomes a deny
-UNREAD = "the gate could not read this command; approve only if you have read the SQL"
 SEPARATORS = {  # what ends a simple command, longest first
     "bash": ("&&", "||", ";;&", ";;", ";&", "|&", ";", "|", "&", "(", ")", "`", "\n"),
     "powershell": ("&&", "||", ";", "|", "&", "(", ")", "{", "}", "\n"),
@@ -680,6 +679,8 @@ def say(mode, reason):
 
 # --- The read.py gate -------------------------------------------------------------------------------------------------
 
+UNREAD = "the gate could not read this command; approve only if you have read the SQL"
+
 READ_PY = re.compile(r"read\.py(?::\S*)?")  # a base_name: read.py, or one of its NTFS streams such as read.py::$data
 DATABASE = frozenset({"query", "check"})  # the subcommands that reach a database, matched in any case
 PATH_OPTIONS = ("--sql", "--connections", "--lprun")  # the options that name a file the plan reads
@@ -861,12 +862,16 @@ def judge_run(command, k, i, base, moved, changed, may_write, found):
     directory; changed, an environment variable the line changes; may_write, whether the line may write a file, by its
     name."""
     handed = handed_on(command)
-    arguments = command.words[k + 1:] if handed is None else [text for j, text in handed if j > k]
+    # Start-Process joins an -ArgumentList's pieces with spaces and the program splits the line again, so 'read.py',
+    # 'query --cx X' reaches read.py as query, --cx and X: each piece is split as the program will.
+    arguments = (command.words[k + 1:] if handed is None
+                 else [piece for j, text in handed if j > k for piece in split_argument_string(text)])
     if command.shell == "powershell":
         arguments = [word for word in arguments if word != "--%"]  # PowerShell's stop-parsing token stays behind
     name = subcommand(arguments)
     if name is None:
-        if handed and any(text.lower() in DATABASE for j, text in handed if j < k):
+        if handed and any(piece.lower() in DATABASE for j, text in handed if j < k
+                          for piece in split_argument_string(text)):
             found.cannot_read("Start-Process hands read.py arguments that stand before it, which the gate cannot place")
         return
     if unsure(name):
@@ -888,7 +893,7 @@ def judge_run(command, k, i, base, moved, changed, may_write, found):
     for option, value in option_values(arguments):
         if unsure(value) or (option == "--lprun" and not re.search(r"[\\/]", value)):
             continue  # said above, or a program name, which read.py looks up on PATH
-        label = shown(value, 120)
+        label = shown_path(value, 120)
         full, why = resolve(value, base)
         if full is None:
             moved_away = moved and why.startswith("a relative path")
@@ -904,6 +909,16 @@ def judge_run(command, k, i, base, moved, changed, may_write, found):
     if not whys:
         lists = [value for _, value in option_values(arguments, ("--connections",))]
         found.plan(arguments, base, sql_files, connections_note(lists))
+
+
+def shown_path(text, limit):
+    """A path as a prompt may show it: shown() with the middle cut out of a long one, so the end, the file's name,
+    stays."""
+    text = shown(text, 10**9)
+    if len(text) <= limit:
+        return text
+    tail = limit * 2 // 3
+    return text[:limit - tail - 3] + "..." + text[-tail:]
 
 
 def connections_note(lists):
@@ -959,6 +974,18 @@ def judge_copies(live, commands, ran, found):
                 found.cannot_read(f"{shown(name, 80)}: the line may write it from read.py before it runs")
 
 
+def judge_computed(live, line, found):
+    """A line that names read.py but runs none the gate can see, and runs something the shell computes (Start-Process
+    python3 -ArgumentList ("read.py query ..."), & ([scriptblock]::Create('python3 read.py query ...'))), may run it
+    through the group or the string: it asks, without a plan, as it does for a computed command beside a run."""
+    if not mentions_read_py(line):
+        return
+    for c in live:
+        computed = computed_command(c)
+        if computed is not None:
+            return found.cannot_read(f"{shown(computed, 60)}: the gate cannot expand it, and the line names read.py")
+
+
 def judge(line, shell, cwd):
     """The Findings for one command line, from every simple command in it, nested ones included."""
     found = Findings()
@@ -983,6 +1010,7 @@ def judge(line, shell, cwd):
             judge_other(c, found, interpreted)
     judge_copies(live, commands, ran, found)
     if not runs:
+        judge_computed(live, line, found)
         return found
     if defines_a_function(commands, line, shell):
         found.cannot_read("the line defines a function or an alias, which may stand for a program it runs")

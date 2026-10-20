@@ -32,7 +32,6 @@ WORTH_READING = re.compile(r"lprun9|\.linq|(?<![\w/.-])(?:-{1,2}|/)cx", re.I)
 
 SHELLS = {"Bash": "bash", "PowerShell": "powershell"}  # the hook's tool_name, and the shell its command is written for
 NOBODY_TO_ASK = frozenset({"bypassPermissions", "dontAsk"})  # permission modes in which an ask becomes a deny
-UNREAD = "the gate could not read this command; approve only if you have read the SQL"
 SEPARATORS = {  # what ends a simple command, longest first
     "bash": ("&&", "||", ";;&", ";;", ";&", "|&", ";", "|", "&", "(", ")", "`", "\n"),
     "powershell": ("&&", "||", ";", "|", "&", "(", ")", "{", "}", "\n"),
@@ -674,6 +673,8 @@ def say(mode, reason):
 
 # --- The lprun9 gate --------------------------------------------------------------------------------------------------
 
+UNREAD = "the gate could not read this command; approve only if you have read what it runs"
+
 LPRUN9 = re.compile(r"lprun9(?:-[a-z0-9]+|~\d+)?")  # a base_name: LPRun9-x86, and an 8.3 name such as LPRUN9~1
 DASHES = {code: "-" for code in (0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2015, 0x2212, 0xFE58, 0xFE63, 0xFF0D)}
 ALIASING = frozenset({"set-alias", "new-alias", "sal", "nal", "alias"})
@@ -863,6 +864,16 @@ def xml_text(value):
     return value
 
 
+def shown_path(text, limit):
+    """A path as a prompt may show it: shown() with the middle cut out of a long one, so the end, the file's name,
+    stays."""
+    text = shown(text, 10**9)
+    if len(text) <= limit:
+        return text
+    tail = limit * 2 // 3
+    return text[:limit - tail - 3] + "..." + text[-tail:]
+
+
 def header_field(text, tag):
     """A connection's DisplayName, Server or Database as the prompt shows it; one that reads like a connection
     string or a password shows as (not shown)."""
@@ -919,7 +930,7 @@ class Reader:
         if (path, run) in self.checked:
             return
         self.checked.add((path, run))
-        label = shown(path, 120)
+        label = shown_path(path, 120)
         if UNEXPANDED.search(path):
             if run:
                 self.found.cannot_read(f"{label}: the gate cannot expand it")

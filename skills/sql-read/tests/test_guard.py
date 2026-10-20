@@ -105,10 +105,10 @@ REFUSALS = {
     "DELETE": ("DELETE FROM dbo.Orders WHERE OrderId = 1", "DELETE"),
     "SELECT ... INTO": ("SELECT * INTO dbo.OrdersCopy FROM dbo.Orders", "INTO"),
     "EXEC": ("EXEC dbo.usp_ShipOrder 1", "EXEC"),
-    "sp_executesql": ("EXECUTE sp_executesql N'SELECT 1'", "sp_executesql"),
-    "xp_cmdshell": ("SELECT 1 AS x\nEXEC master..xp_cmdshell 'dir'", "xp_cmdshell"),
+    "sp_executesql": ("EXECUTE sp_executesql N'SELECT 1'", "sp_*"),
+    "xp_cmdshell": ("SELECT 1 AS x\nEXEC master..xp_cmdshell 'dir'", "xp_*"),
     "two statements": ("SELECT * FROM dbo.Orders; SELECT * FROM dbo.Customers", "one statement"),
-    "a SET ROWCOUNT 0 prelude": ("SET ROWCOUNT 0\nSELECT * FROM dbo.Orders", "SET ROWCOUNT"),
+    "a SET ROWCOUNT 0 prelude": ("SET ROWCOUNT 0\nSELECT * FROM dbo.Orders", "line 1 starts SET"),
     "BEGIN TRAN": ("BEGIN TRAN\nSELECT * FROM dbo.Orders", "BEGIN"),
     "WAITFOR": ("WAITFOR DELAY '00:01:00'\nSELECT 1 AS x", "WAITFOR"),
     "UPDLOCK": ("SELECT * FROM dbo.Orders WITH (UPDLOCK, ROWLOCK) WHERE OrderId = 1", "UPDLOCK"),
@@ -155,10 +155,10 @@ REFUSALS = {
     "XLOCK in lower case": ("select * from dbo.Orders with (xlock)", "xlock"),
     "SET TRANSACTION ISOLATION LEVEL": ("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE\nSELECT 1 AS x", "TRANSACTION"),
     # The shape: what may come before the SELECT, and that nothing comes after it.
-    "SET NOCOUNT OFF before the SELECT": ("SET NOCOUNT OFF;\nSELECT 1 AS x", "SET NOCOUNT"),
+    "SET NOCOUNT OFF before the SELECT": ("SET NOCOUNT OFF;\nSELECT 1 AS x", "line 1 starts SET"),
     "SET LOCK_TIMEOUT before the SELECT, no semicolons": ("DECLARE @a int\nSET LOCK_TIMEOUT 0\nSELECT 1 AS x",
-                                                          "SET LOCK_TIMEOUT"),
-    "a cursor declared": ("DECLARE c CURSOR FOR SELECT * FROM dbo.Orders", "DECLARE c"),
+                                                          "line 2 starts SET"),
+    "a cursor declared": ("DECLARE c CURSOR FOR SELECT * FROM dbo.Orders", "line 1 starts DECLARE"),
     "SET ROWCOUNT 0 after the SELECT, with no semicolon": ("SELECT TOP 1 * FROM dbo.Orders\nSET ROWCOUNT 0\n"
                                                            "SELECT * FROM dbo.Orders", "SET starts another"),
     "a DECLARE after the SELECT": ("SELECT 1 AS x\nDECLARE @y int", "DECLARE starts another"),
@@ -170,13 +170,37 @@ REFUSALS = {
     "CLOSE after the SELECT": ("SELECT 1 AS x\nCLOSE c", "CLOSE starts another"),
     "DEALLOCATE after the SELECT": ("SELECT 1 AS x\nDEALLOCATE c", "DEALLOCATE starts another"),
     "a lower-case set after the select": ("select 1 as x\nset rowcount 0\nselect 2 as y", "set starts another"),
-    "OPEN before the SELECT": ("OPEN c\nSELECT 1 AS x", "not OPEN c"),
-    "SET @@ before the SELECT": ("SET @@ROWCOUNT = 0\nSELECT 1 AS x", "not SET @@ROWCOUNT"),
+    "OPEN before the SELECT": ("OPEN c\nSELECT 1 AS x", "line 1 starts OPEN"),
+    "SET @@ before the SELECT": ("SET @@ROWCOUNT = 0\nSELECT 1 AS x", "line 1 starts SET"),
     "a fullwidth SET after the SELECT": ("SELECT 1 AS x\n\uff33\uff25\uff34 ROWCOUNT 0\nSELECT 2 AS y",
                                          "starts another"),
     "a statement after the final semicolon": ("SELECT 1 AS x; DECLARE @x int", "one statement"),
-    "a bare procedure after the semicolon, named as written": ("SELECT 1 AS x;\n  dbo.usp_Purge 7",
-                                                               "and dbo.usp_Purge follows"),
+    "a bare procedure after the semicolon, by its line": ("SELECT 1 AS x;\n  dbo.usp_Purge 7", "line 2 follows"),
+    # Service Broker: CONVERSATION and DIALOG name every statement of it that is not already a refused word.
+    "END CONVERSATION after the SELECT": ("SELECT 1 AS x\nEND CONVERSATION @h WITH CLEANUP", "CONVERSATION"),
+    "END CONVERSATION glued to a DECLARE prelude": ("DECLARE @h uniqueidentifier = NEWID()\n"
+                                                    "END CONVERSATION @h WITH CLEANUP\nSELECT 1 AS x",
+                                                    "CONVERSATION"),
+    "MOVE CONVERSATION": ("SELECT 1 AS x\nMOVE CONVERSATION @h TO @g", "CONVERSATION"),
+    "GET CONVERSATION GROUP": ("SELECT 1 AS x\nGET CONVERSATION GROUP @g FROM dbo.Q", "CONVERSATION"),
+    "BEGIN DIALOG": ("DECLARE @h uniqueidentifier\nBEGIN DIALOG @h FROM SERVICE a TO SERVICE 'b' ON CONTRACT c\n"
+                     "SELECT 1 AS x", "DIALOG"),
+    # Markup, wherever it stands: a block after SQL, behind a comment, or only a tag.
+    "a connection block after a DECLARE": ("DECLARE @top int = 20\n<Connection>\n<Password>FAKE-tok</Password>\n"
+                                           "</Connection>\nSELECT 1 AS x", "markup"),
+    "a connection block after the SELECT": ("SELECT 1 AS x\n<Connection>\n<Password>FAKE-tok</Password>\n"
+                                            "</Connection>", "markup"),
+    "a connection block after a SET": ("SET @a = 1\n<Connection><Password>FAKE-tok</Password></Connection>\n"
+                                       "SELECT 1 AS x", "markup"),
+    "a .linq header behind a comment": ("-- note\n<Query Kind=\"SQL\">\n  <Connection>\n"
+                                        "    <Password>sp_FAKE-tok</Password>\n  </Connection>\n</Query>\n"
+                                        "SELECT 1 AS x", "markup"),
+    "a closing tag alone": ("SELECT 1 AS x\n</Password>", "markup"),
+    "an opening tag alone": ("SELECT 1 AS x\n<Password>", "markup"),
+    "a self-closing tag": ("SELECT 1 AS x /* */\n<Connection ID=\"1\" />", "markup"),
+    "an XML declaration": ("SELECT 1 AS x\n<?xml version=\"1.0\"?>", "markup"),
+    # <! is also markup, though here the scan stops sooner, at the bracket the tag opens.
+    "a CDATA section": ("SELECT 1 AS x\n<![CDATA[FAKE-tok]]>", "not closed"),
     "a DECLARE alone": ("DECLARE @x int = 1", "SELECT or WITH"),
     "a query in parentheses": ("(SELECT 1 AS x)", "SELECT or WITH"),
     "USE": ("USE master; SELECT 1 AS x", "USE"),
@@ -238,6 +262,17 @@ class Guard(unittest.TestCase):
         self.assertIn("[save]", why)
         self.assertEqual(read.guard("SELECT [save] FROM dbo.Settings")[0], True)
 
+    def test_a_use_hint_is_refused_without_advice_that_would_break_it(self):
+        for sql in ("SELECT 1 AS x OPTION (USE HINT ('FORCE_LEGACY_CARDINALITY_ESTIMATION'))",
+                    "SELECT 1 AS x OPTION (USE PLAN N'<ShowPlanXML/>')"):
+            with self.subTest(sql):
+                ok, why = read.guard(sql)
+                self.assertFalse(ok)
+                self.assertIn("USE", why)
+                self.assertNotIn("[", why)
+        # A column named use still gets the advice.
+        self.assertIn("[use]", read.guard("SELECT use FROM dbo.Settings")[1])
+
     def test_every_word_on_the_deny_list_is_refused_bare_and_passes_in_brackets(self):
         for entry in read.DENY_LIST.split():
             word = entry.replace("*", "anything")
@@ -245,7 +280,8 @@ class Guard(unittest.TestCase):
                 with self.subTest(spelling):
                     ok, why = read.guard(f"SELECT {spelling} FROM dbo.Things")
                     self.assertFalse(ok, f"{spelling} passed")
-                    self.assertIn(spelling.lower(), why.lower())
+                    # A word is named as written; a name that starts sp_ or xp_ is named by the entry, not the text.
+                    self.assertIn((entry if entry.endswith("*") else spelling).lower(), why.lower())
                     ok, why = read.guard(f"SELECT [{spelling}] FROM dbo.Things")
                     self.assertTrue(ok, why)
 
@@ -274,6 +310,49 @@ class Guard(unittest.TestCase):
                 self.assertNotIn("FAKE", why)
                 self.assertNotIn("Password", why)
 
+    def test_no_reason_quotes_the_sql(self):
+        # A file given as the SQL by mistake can hold a password, an .env line or a token. A refusal's reason goes to
+        # stderr, the plan and the permission prompt, so it names a deny-list entry, a keyword or a line, never text.
+        secret = "FAKE-tok-7f3a9c2e"
+        for name, sql in {
+            "an .env line before a SELECT": f"API_KEY={secret}\nSELECT 1 AS x",
+            "a name before the SELECT": f"{secret} = 1\nSELECT 1 AS x",
+            "a name after the semicolon": f"SELECT 1 AS x;\n{secret} 7",
+            "a name that starts sp_": f"SELECT 1 AS x\nsp_{secret}",
+            "a name that starts xp_ after a keyword": f"EXEC xp_{secret}",
+            "a name glued to a refused word": f"SELECT 1 AS x\nsp_{secret}_INSERT",
+            "a colon line": f":r {secret}.sql\nSELECT 1 AS x",
+            "a !! line": f"SELECT 1 AS x\n!!echo {secret}",
+            "a .linq with a connection behind a comment": (f"-- x\n<Query><Connection><Password>sp_{secret}</Password>"
+                                                           "</Connection></Query>\nSELECT 1 AS x"),
+            "a connection block after a DECLARE": (f"DECLARE @a int\n<Connection><Password>{secret}</Password>"
+                                                   "</Connection>\nSELECT 1 AS x"),
+        }.items():
+            with self.subTest(name):
+                ok, why = read.guard(sql)
+                self.assertFalse(ok)
+                self.assertNotIn("FAKE", why)
+                self.assertNotIn("7f3a9c2e", why)
+                self.assertNotIn("API_KEY", why)
+                self.assertNotIn("Password", why)
+
+    def test_a_deny_word_is_named_as_written_and_anything_else_by_its_entry_and_line(self):
+        self.assertIn("UPDATE is refused", read.guard("UPDATE dbo.T SET a = 1")[1])
+        self.assertIn("update is refused", read.guard("update dbo.T SET a = 1")[1])
+        why = read.guard("SELECT 1 AS x\nsp_whatever_name")[1]
+        self.assertTrue(why.startswith("sp_* (line 2) is refused"), why)
+        why = read.guard("SELECT 1 AS x\n\u0131nsert dbo.Log VALUES (1)")[1]
+        self.assertTrue(why.startswith("INSERT (line 2) is refused"), why)
+
+    def test_markup_tags_are_refused_and_the_operators_that_look_like_them_pass(self):
+        for sql in ("SELECT a FROM t WHERE a <> 1 AND b <= 2 AND c >= 3 AND d < 4 AND e > 5",
+                    "SELECT a FROM t WHERE a<b AND c>d", "SELECT a FROM t WHERE a</*x*/b",
+                    "SELECT 1 AS x /* <Connection> */ -- </Password>", "SELECT '<Password>x</Password>' AS x",
+                    "SELECT a / b AS q, a /b > 1 AS r FROM t", "SELECT a FROM t WHERE a !< 1 AND b !> 2"):
+            with self.subTest(sql):
+                ok, why = read.guard(sql)
+                self.assertTrue(ok, why)
+
     def test_the_deny_list_holds_every_word_the_plan_names(self):
         self.assertEqual([w for w in PLAN_DENY if w not in read.DENY_LIST.split()], [])
         self.assertEqual(len(read.DENY_LIST.split()), len(set(read.DENY_LIST.split())), "a word is listed twice")
@@ -300,7 +379,7 @@ class Guard(unittest.TestCase):
     def test_a_refusal_names_each_refused_word_once(self):
         ok, why = read.guard("EXEC sp_executesql N'x'\nEXEC sp_executesql N'y'")
         self.assertFalse(ok)
-        self.assertEqual(len(re.findall(r"\bsp_executesql\b", why)), 1, why)
+        self.assertEqual(len(re.findall(r"sp_\*", why)), 1, why)
         self.assertEqual(len(re.findall(r"\bEXEC\b", why)), 1, why)
 
     def test_text_that_is_not_a_string_is_refused(self):

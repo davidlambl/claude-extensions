@@ -46,15 +46,17 @@ To make the prompt hold without the hook, add ask rules to your user settings, `
 {
   "permissions": {
     "ask": ["Bash(*un9*)", "Bash(*uN9*)", "Bash(*Un9*)", "Bash(*UN9*)", "PowerShell(*lprun9*)",
-            "Bash(*read.py*query*)", "Bash(*read.py*check*)", "PowerShell(*read.py*query*)",
-            "PowerShell(*read.py*check*)", "Bash(*m read *query*)", "Bash(*m read *check*)",
-            "PowerShell(*m read *query*)", "PowerShell(*m read *check*)", "Bash(*mread *query*)",
-            "Bash(*mread *check*)", "PowerShell(*mread *query*)", "PowerShell(*mread *check*)"]
+            "Bash(*d.p*query*)", "Bash(*D.p*query*)", "Bash(*d.P*query*)", "Bash(*D.P*query*)",
+            "Bash(*d.p*check*)", "Bash(*D.p*check*)", "Bash(*d.P*check*)", "Bash(*D.P*check*)",
+            "PowerShell(*read.py*query*)", "PowerShell(*read.py*check*)", "Bash(*m read *query*)",
+            "Bash(*m read *check*)", "PowerShell(*m read *query*)", "PowerShell(*m read *check*)",
+            "Bash(*mread *query*)", "Bash(*mread *check*)", "PowerShell(*mread *query*)",
+            "PowerShell(*mread *check*)"]
   }
 }
 ```
 
-The twelve `query` and `check` rules cover those two commands, whichever transport runs them, in each form the hook itself catches: `read.py` by its path, `python3 -m read` or `-mread` (from the scripts folder or with `PYTHONPATH`), and a quoted command such as `'query'`. They match the command's text, not what it does, so they miss a copy or a rename of `read.py`, as in `cp read.py r.py && python3 r.py query`, a script or an alias that runs it, and, from Bash, a name spelled in other letter case, such as `READ.PY`. The hook asks for the copy. The five `lprun9` rules make every other run of lprun9 prompt too: a Bash pattern matches only the letter case it is written in, so the four Bash ones spell `un9` in each casing, which catches `LPRUN9.EXE` and `C:/PROGRA~1/LINQPAD9/LPRUN9.EXE` and also prompts for any other Bash command holding those letters; since `lprun9 -cxname=` reaches the same connections with none of these checks; that includes a run that touches no connection. An ask rule prompts even in auto mode, and even for a command inside `cd x && …` or `$(…)`, and it holds with the plugin disabled. `read.py plan` and `read.py connections` match none of them unless an argument holds the word `query` or `check`, as a `--sql query.sql` would, so a read prompts once. The hook adds what a rule cannot: the plan, with the SQL.
+The eighteen `query` and `check` rules cover those two commands, whichever transport runs them, in each form the hook itself catches: `read.py` by its path, `python3 -m read` or `-mread` (from the scripts folder or with `PYTHONPATH`), and a quoted command such as `'query'`. They match the command's text, not what it does, so they miss a copy or a rename of `read.py`, as in `cp read.py r.py && python3 r.py query`, a script or an alias that runs it, and a module name spelled in other letter case, as in `python3 -m READ`. A Bash pattern matches only the letter case it is written in, and Windows does not care how a file name is cased, so the Bash rules and the hook's Bash patterns for `read.py` name the fragment `d.p` in each of its four casings: `READ.PY` and `Read.py` are caught, and so is any other Bash command that holds those letters and, for a rule, the word `query` or `check`. The hook asks for the copy. The five `lprun9` rules make every other run of lprun9 prompt too: the four Bash ones spell `un9` in each casing, which catches `LPRUN9.EXE` and `C:/PROGRA~1/LINQPAD9/LPRUN9.EXE` and also prompts for any other Bash command holding those letters; since `lprun9 -cxname=` reaches the same connections with none of these checks; that includes a run that touches no connection. An ask rule prompts even in auto mode, and even for a command inside `cd x && …` or `$(…)`, and it holds with the plugin disabled. `read.py plan` and `read.py connections` match none of them unless an argument holds the word `query` or `check`, as a `--sql query.sql` would, so a read prompts once. The hook adds what a rule cannot: the plan, with the SQL.
 
 When a connection has no login that can only read, you can let it run with the one it has. List it in `SQL_READ_WRITABLE_OK`, in the `env` of your Claude Code settings: connection names, comma-separated and matched as `--cx` is, or `*` for every connection.
 
@@ -87,7 +89,7 @@ python3 skills/sql-read/skills/sql-read/scripts/read.py check --cx Sales
 | `rules` | Prints, as JSON for your settings, the two allow rules that let `query --allow-writable-login` past auto mode's classifier, with this `read.py`'s own path. Touches no database. |
 | `plan --cx NAME [--sql FILE] [query options]` | Prints what `query` would run, or `check` without `--sql`, as one JSON object, and runs nothing. Its fields: `command`, `transport`, `connection`, `server`, `database`, `production`, `auth`, `sql`, `guard` (`ok` and `reason`), `max_rows`, `timeout`, `lock_timeout_ms`, `nolock`, `allow_writable_login`, `format`, `artifact` (the `.linq` it would write), `argv` (the command it would run), `exit` and `error`. `sql` is `null` when the guard refuses the SQL, so a wrong `--sql` file is never copied into the output. It exits 2 for the command line or the `--sql` file, 4 when the guard refuses the SQL, 3 when the connection or lprun9 cannot be used, else 0. |
 | `query --cx NAME --sql FILE [query options]` | Runs the SQL once, after the guard and with the prelude below. |
-| `check --cx NAME [--timeout S]` | Lists what the login can write: one row for each write role or database permission it holds. Exits 0 when it holds none, 5 when it holds any, with a one-line verdict on stderr. |
+| `check --cx NAME [--timeout S] [--out DIR] [--name NAME]` | Lists what the login can write: one row for each write role, database permission or schema permission it holds. Exits 0 when it holds none, 5 when it holds any, with a one-line verdict on stderr, and 1 when its output has no `kind,name` header. |
 
 | Option | What it does |
 | --- | --- |
@@ -111,15 +113,16 @@ Exit codes:
 
 | Code | Meaning |
 | --- | --- |
-| 0 | It ran; for `check`, the login holds no write role and no database permission to write. |
-| 1 | lprun9 failed, with its error shown, or could not start; or another error. |
+| 0 | It ran; for `check`, the login holds no write role, no database permission and no schema permission to write. |
+| 1 | lprun9 failed, with its error shown, or could not start; `check` printed no `kind,name` header; or another error. |
 | 2 | The command line, or a `--sql` file that is missing, is not a regular file, or is not UTF-8 text. |
 | 3 | lprun9 is missing; something sql-read did not write is where its `.linq` goes; the connection list cannot be read; the connection is not found or has no name; or the transport cannot sign in the way the connection does (lprun9 serves all three kinds). |
 | 4 | The guard refused the SQL. |
 | 5 | The login can write, so nothing ran. |
 | 6 | It timed out. |
+| 130 | Stopped with Ctrl+C. |
 
-stdout is lprun9's output, byte for byte. Everything `read.py` writes itself goes to stderr as UTF-8, and ends with one summary line:
+`query` and `check` print lprun9's output to stdout, byte for byte. Everything else `read.py` writes while it runs goes to stderr as UTF-8, and ends with one summary line; `connections`, `plan` and `rules` print their listing, JSON and rules to stdout, with any note on stderr:
 
 ```
 sql-read: Sales (sales-sql.example.net / Orders, production): 200 rows in 1.8 s — cap reached; there may be more: raise --max-rows or add TOP and ORDER BY
@@ -140,20 +143,24 @@ IF IS_SRVROLEMEMBER('sysadmin') = 1                      -- the probe, left out 
    OR EXISTS (SELECT 1 FROM sys.fn_my_permissions(NULL, 'DATABASE') WHERE permission_name IN
       ('INSERT','UPDATE','DELETE','ALTER','CONTROL','CREATE TABLE','CREATE PROCEDURE','CREATE FUNCTION',
        'CREATE VIEW','ALTER ANY SCHEMA','TAKE OWNERSHIP','ALTER ANY USER','ALTER ANY ROLE'))
+   OR EXISTS (SELECT 1 FROM sys.schemas AS s CROSS APPLY sys.fn_my_permissions(QUOTENAME(s.name), 'SCHEMA') AS p
+      WHERE p.permission_name IN ('INSERT','UPDATE','DELETE','ALTER','CONTROL','TAKE OWNERSHIP'))
   THROW 50001, 'sql-read-guard: this login can write to this database', 1;
 SET ROWCOUNT 200;                                        -- --max-rows, left out with --max-rows 0
 ```
 
-`SET ROWCOUNT` caps the rows the SELECT returns without rewriting it, where a `TOP (n) * FROM (…)` wrapper would break on `ORDER BY` and on duplicate column names. The batch is written for SQL Server 2016 and later and for Azure SQL. `check` sends the first two lines, then one SELECT that returns a row for each write role and permission the probe looks for, such as `role, db_owner` or `permission, INSERT`; no rows means it holds none of them.
+`SET ROWCOUNT` caps the rows the SELECT returns without rewriting it, where a `TOP (n) * FROM (…)` wrapper would break on `ORDER BY` and on duplicate column names. The batch is written for SQL Server 2016 and later and for Azure SQL. `check` sends the first two lines, then one SELECT that returns a row for each write role and permission the probe looks for, such as `role, db_owner`, `permission, INSERT` or `permission, UPDATE ON SCHEMA::dbo`; no rows means it holds none of them. `check` ends read-only only when that SELECT's own `kind,name` header comes back: empty output, or output that starts any other way, is exit 1 and no verdict.
 
 ## The guard
 
 The guard decides before anything runs, and its refusal (exit 4) says why. Comments, nested `/* */` ones included, are dropped first, and `'strings'`, `[bracketed]` names and `"quoted"` names are taken whole, so nothing inside them counts. It accepts the SQL only when:
 
-1. it is not empty, is at most 64 KB as UTF-8, does not start with `<` (a `.linq` script or a connection list does, and the reason quotes none of it), and has no line a client would take for a command of its own: `GO`, with or without a count or a comment after it, or a line that starts with `:` or `!!`;
+1. it is not empty, is at most 64 KB as UTF-8, holds no markup (it does not start with `<`, and has no `</`, `<?`, `<!`, `/>` or `<Word>` tag anywhere, as a `.linq` script or a connection list has), and has no line a client would take for a command of its own: `GO`, with or without a count or a comment after it, or a line that starts with `:` or `!!`;
 2. only `DECLARE @…` and `SET @…` statements come before the main one, so `SET ROWCOUNT 0` and `DECLARE c CURSOR` are refused;
 3. the main statement begins `SELECT` or `WITH`, a leading `;` allowed, and is the last: after its top-level `;` come only more `;`, and no word that starts a statement (`DECLARE`, `SET`, `OPEN`, `CLOSE`, `DEALLOCATE`, `READTEXT`, `CHECKPOINT`, or `FETCH` other than after `ROW` or `ROWS`) follows it outside parentheses;
-4. no word of the deny list stands anywhere, at any depth, in any letter case, and neither does `NEXT VALUE FOR`, which advances a sequence.
+4. no word of the deny list stands anywhere, at any depth, in any letter case, and neither does `NEXT VALUE FOR`, which advances a sequence. The one exception is `MERGE` right before `JOIN` or `UNION`, the hint in `INNER MERGE JOIN` and `OPTION (MERGE JOIN)` or `OPTION (MERGE UNION)`, which picks how a read is done and is not the `MERGE` statement.
+
+A refusal's reason never quotes the SQL: it names the deny-list entry (a word as written; `sp_*` or `xp_*` for a name that starts so, or the word it reads as for a spelling that is not plain ASCII), a keyword the shape check knows, or a line number, so that a password, an `.env` line or a token in a file given as the SQL is not repeated on stderr, in the plan or in the prompt.
 
 The deny list, as `read.py` holds it in `DENY_LIST`:
 
@@ -161,7 +168,7 @@ The deny list, as `read.py` holds it in `DENY_LIST`:
 INSERT UPDATE DELETE MERGE INTO EXEC EXECUTE CREATE ALTER DROP TRUNCATE GRANT REVOKE DENY BACKUP RESTORE BULK
 OPENROWSET OPENQUERY OPENDATASOURCE OPENXML DBCC KILL SHUTDOWN RECONFIGURE WAITFOR RAISERROR THROW PRINT GOTO
 RETURN IF WHILE BEGIN COMMIT ROLLBACK SAVE TRAN TRANSACTION USE ENABLE DISABLE SETUSER REVERT
-ADD WRITETEXT UPDATETEXT RECEIVE SEND
+ADD WRITETEXT UPDATETEXT RECEIVE SEND CONVERSATION DIALOG
 xp_* sp_*
 UPDLOCK XLOCK TABLOCKX HOLDLOCK SERIALIZABLE REPEATABLEREAD TABLOCK
 ```
@@ -174,7 +181,7 @@ These pass: `CASE … WHEN … END`, `WITH (NOLOCK)`, `OPTION (RECOMPILE)` and t
 
 **Deliberate false refusals.** These are reads, and the guard refuses them:
 
-- a column or table whose name is on the list, unbracketed, such as `save`, `use`, `return`, `if`, `print`, `kill`, `send`, `receive` or `add`. Written `[save]` or `"save"`, it passes, and the refusal says so;
+- a column or table whose name is on the list, unbracketed, such as `save`, `use`, `return`, `if`, `print`, `kill`, `send`, `receive`, `add`, `conversation` or `dialog`. Written `[save]` or `"save"`, it passes, and the refusal says so;
 - `OPTION (USE HINT (…))` and `OPTION (USE PLAN …)`, since `USE` is on the list;
 - a line that starts with `GO`, such as one that starts `GO.dbo.Orders`, and a `GO` line inside a string or a comment;
 - a form feed or a vertical tab outside a string.
@@ -184,18 +191,19 @@ These pass: `CASE … WHEN … END`, `WITH (NOLOCK)`, `OPTION (RECOMPILE)` and t
 - a function with side effects, called from the SELECT;
 - a second `SELECT` with no `;` before it, which is a read too, and which `SET ROWCOUNT` also caps;
 - four-part names that reach a linked server;
-- Service Broker's `END CONVERSATION`, `MOVE CONVERSATION` and `GET CONVERSATION GROUP` after the SELECT, which need ownership the probe refuses.
 
 ## What it costs and touches
 
 - **It runs real reads, production included,** through your saved connection and as its login. A read can be slow or wait on locks: the timeout, the lock timeout and the row cap bound it, and `--nolock` trades the wait for dirty reads.
 - **The login is the boundary.** The guard checks the SQL's shape and the probe checks the login's rights; neither makes a login read-only. With a login that can only read, nothing they miss can write. A run with `--allow-writable-login`, which Claude passes for a connection listed in `SQL_READ_WRITABLE_OK`, gives that up: there only the guard and the prompt stand in the way.
-- **The probe sees roles and database-wide permissions, not grants on single objects.** It looks for the server role `sysadmin`, the database roles `db_owner`, `db_datawriter` and `db_ddladmin`, and the database permissions the batch lists. A login granted `UPDATE` on one table passes it. On Azure SQL `IS_SRVROLEMEMBER` returns 0 or NULL, so there the database roles and permissions carry the check. `check` has the same reach.
+- **The probe sees roles, database-wide permissions and schema grants, not grants on single objects.** It looks for the server role `sysadmin`, the database roles `db_owner`, `db_datawriter` and `db_ddladmin`, the database permissions the batch lists, and `INSERT`, `UPDATE`, `DELETE`, `ALTER`, `CONTROL` and `TAKE OWNERSHIP` on each schema the login can see. A login granted `UPDATE` on one table passes it; one granted `UPDATE` on a schema does not. The schema clause rests on the documented behaviour of `fn_my_permissions` and is exercised against a server only by the end-to-end test (`SQL_READ_E2E_CX`). On Azure SQL `IS_SRVROLEMEMBER` returns 0 or NULL, so there the database roles and permissions carry the check. `check` has the same reach.
 - **The password stays LINQPad's.** The connection list's `Password` element is never printed, logged or written, and is not in `--json`, the plan, a message, or the `.linq` file, which names the connection only. LINQPad encrypts a stored password for your Windows user, so any process running as you can use it, another SQL client included. There the login's permissions are the only boundary.
 - **Each run writes one `.linq` file**, the header and the batch, to the `--out` folder. The results are written nowhere: they are business data, and go to stdout only.
-- **A timeout stops lprun9 and the query it hosts.** lprun9 can run the query in a child process, so on Windows the whole process tree is ended with `taskkill /T /F`; elsewhere its process group is killed. Exit 6 follows.
+- **A timeout stops lprun9 and the query it hosts.** lprun9 can run the query in a child process, so on Windows the whole process tree is ended with `taskkill /T /F`; elsewhere its process group is killed. Exit 6 follows. When `taskkill` fails (it cannot run, is refused, or does not answer) or the group cannot be killed, stderr says so, and that the query host may still be running.
 - **The hook asks before every `query` and `check`,** with the plan as its reason, built as `read.py plan` builds it, so the preview in chat and the prompt cannot differ. `read.py plan` and `read.py connections` touch no database and never prompt. A command it cannot read asks with `sql-read: the gate could not read this command; approve only if you have read the SQL`. In the `bypassPermissions` and `dontAsk` modes, with nobody to ask, it refuses instead.
 - **The hook is a speed bump, not a boundary.** Claude Code calls an `if` pattern best-effort, and runs the hook anyway when it cannot parse the command. A mod that handles `tool.check` can approve past the hook. The ask rules above hold where the hook does not, for the forms they match.
+- **Forms that get past both, on purpose.** Someone set on it can run `read.py` without its name in the command: `python3 -c "import read; read.main()" query …` from the scripts folder, a module name spelled in other letter case (`-m READ`), a drive-relative path such as `C:read.py`, or a copy made by a program the gate does not know writes files. The login, not the hook, is the boundary there.
+- **The `rules` allow rule outlives the hook.** `read.py rules` prints rules that let `--allow-writable-login` past auto mode's classifier, and they stay in your settings when the plugin is disabled: then nothing asks. Keep the ask rules above beside them.
 - **Its cost is one Python start, for a command that names `read.py` or runs `python3 -m read`.** Each handler carries an `if` pattern, so any other command starts nothing; `read.py plan`, `read.py connections` and a `cat read.py` start the hook and pass silently. A `--sql`, `--connections` or `--lprun` on a network path (`//host/share/…`) asks without the plan, since the hook does not open a network path before you approve. The hook reads the SQL file and the connection list to build the plan, within a 10-second timeout.
 - **A failed hook blocks the command.** If the hook crashes, overruns its timeout, or finds no `python3` on the `PATH`, Claude Code blocks the command (`onFailure: "block"`), so a broken hook never lets a read through unasked. The hook is started with no shell, so `python3` must be a program on the `PATH`; a Git Bash alias does not count.
 

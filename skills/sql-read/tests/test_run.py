@@ -205,8 +205,8 @@ class Check(Harness):
         code, out, err, transport = self.check(Result(0, b"kind,name\r\n"))
         self.assertEqual(code, 0, err)
         self.assertEqual(out, b"kind,name\r\n")
-        self.assertEqual(err, f"sql-read: {WHO}: read-only: no write role and no database permission to write "
-                              f"(grants on single objects are not checked)\n")
+        self.assertEqual(err, f"sql-read: {WHO}: read-only: no write role, no database permission and no "
+                              f"schema permission to write (grants on single objects are not checked)\n")
         self.assertEqual(transport.calls[0]["batch"], read.check_batch())
 
     def test_a_check_that_finds_write_roles_or_permissions_exits_5(self):
@@ -218,10 +218,25 @@ class Check(Harness):
                                        f"permission ALTER ANY SCHEMA)"), err)
         self.assertEqual(err.count("\n"), 1)
 
-    def test_a_check_whose_output_has_no_header_counts_every_row(self):
-        code, _, err, _ = self.check(Result(0, b"role,db_datawriter\r\n"))
-        self.assertEqual(code, 5, err)
-        self.assertIn("role db_datawriter", err)
+    def test_a_check_whose_output_has_no_header_is_no_verdict(self):
+        # Exit 0 reads as read-only, so output that is not the check's rows must never get it: not none at all (the
+        # tool ran and printed nothing), and not a first row that is no header.
+        for name, data, says in (("nothing", b"", "it printed nothing"), ("blank lines", b"\r\n\r\n", "it printed nothing"),
+                                 ("rows with no header", b"role,db_datawriter\r\n", "no kind,name header"),
+                                 ("an error shown as output", b"Msg 229, Level 14\r\n", "no kind,name header")):
+            with self.subTest(name):
+                code, _, err, _ = self.check(Result(0, data))
+                self.assertEqual(code, 1, err)
+                self.assertIn(says, err)
+                self.assertNotIn("read-only", err)
+                self.assertNotIn("this login can write (", err)
+
+    def test_a_check_takes_out_and_name_as_the_readme_says(self):
+        transport = self.use(transport=FakeTransport(Result(0, b"kind,name\r\n")))
+        code, _, err = self.main("check", "--cx", "Sales", "--out", "scripts-out", "--name", "mycheck")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(Path(transport.calls[0]["name"]), Path("mycheck"))
+        self.assertEqual(Path(transport.calls[0]["out"]).name, "scripts-out")
 
     def test_a_check_that_fails_or_times_out(self):
         code, _, err, _ = self.check(Result(1, b"", b"boom\r\n"))

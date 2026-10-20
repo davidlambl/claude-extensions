@@ -70,6 +70,23 @@ class Check(unittest.TestCase):
         self.assertTrue(last.startswith("sql-read: "), last)
         self.assertRegex(last, "read-only|this login can write")
 
+    def test_query_agrees_with_check_and_the_row_cap_holds(self):
+        # The batch's probe (its THROW) and check's query look for the same grants, so for one login they must agree:
+        # a login check says is read-only runs the query, and one it says can write stops it with exit 5. This is the
+        # only test of the probe's own SQL, its THROW and SET ROWCOUNT, against a server.
+        check = run_read("check", "--cx", CX, "--timeout", "60", timeout=180)
+        self.assertIn(check.returncode, (0, 5), check.stderr.decode("utf-8", "replace"))
+        with tempfile.TemporaryDirectory() as temp:
+            sql = Path(temp) / "q.sql"
+            sql.write_text("SELECT TOP 5 name FROM sys.objects ORDER BY name", encoding="utf-8")
+            query = run_read("query", "--cx", CX, "--sql", sql, "--max-rows", "2", "--timeout", "60", timeout=180)
+        err = query.stderr.decode("utf-8", "replace")
+        self.assertEqual(query.returncode, check.returncode, err)
+        if query.returncode == 0:
+            self.assertRegex(err.strip().splitlines()[-1], r"\b2 rows\b")  # the cap, not the TOP 5
+        else:
+            self.assertIn("this login can write", err)
+
 
 if __name__ == "__main__":
     unittest.main()

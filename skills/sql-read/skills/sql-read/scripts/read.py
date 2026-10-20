@@ -5,7 +5,7 @@ Usage:
   python3 read.py connections [--json]
   python3 read.py rules
   python3 read.py plan  --cx NAME [--sql FILE] [query options]
-  python3 read.py check --cx NAME [--timeout S]
+  python3 read.py check --cx NAME [--timeout S] [--out DIR] [--name NAME]
   python3 read.py query --cx NAME --sql FILE [--max-rows N] [--format csv|csvi|text|html] [--timeout S]
                         [--lock-timeout MS] [--nolock] [--allow-writable-login] [--out DIR] [--name NAME]
 
@@ -15,8 +15,8 @@ Usage:
   plan         prints what query (with --sql) or check (without it) would run, as one JSON object, and runs
                nothing. Exits 4 when the guard refuses the SQL (the plan then holds no SQL, only the reason), 3 when
                the connection, the transport's tool or their pairing is unusable, else 0.
-  check        lists what the login can write: one row for each write role or database permission it holds.
-               Exits 0 when it has none, 5 when it has any.
+  check        lists what the login can write: one row for each write role, database permission or schema permission
+               it holds. Exits 0 when it has none, 5 when it has any, 1 when it printed no kind,name header.
   query        runs the SQL once: the guard checks it first, then one batch stops before the SQL if the login can
                write (exit 5) and caps the rows the SELECT returns.
 
@@ -39,9 +39,11 @@ Common options:
                           %APPDATA%\LINQPad\ConnectionsV2.xml)
   --lprun PATH            lprun9 itself (default: env LPRUN9, else lprun9 on PATH, else LINQPad 9's install folders)
 
-Exit codes: 0 ran; 1 the transport's tool failed (its error is shown) or another error; 2 the command line; 3 the
-transport's tool is missing, the connection is not found or has no name, or the transport cannot serve the
-connection's sign-in kind; 4 the guard refused the SQL; 5 the login can write; 6 timed out.
+Exit codes: 0 ran; 1 the transport's tool failed (its error is shown), check printed no kind,name header, or another
+error; 2 the command line, or a --sql file that is missing, is not a regular file or is not UTF-8 text; 3 the transport's
+tool is missing, something sql-read did not write stands where its script goes, the connection is not found or has no
+name, or the transport cannot serve the connection's sign-in kind; 4 the guard refused the SQL; 5 the login can write;
+6 timed out; 130 stopped with Ctrl+C.
 
 stdout is the tool's output, unchanged. stderr ends with one summary line: the rows (counted for csv and csvi), the
 time taken, and whether the cap was reached. Nothing writes the results to disk. The guard is a shape check, and the
@@ -79,25 +81,28 @@ DENY_LIST = """
 INSERT UPDATE DELETE MERGE INTO EXEC EXECUTE CREATE ALTER DROP TRUNCATE GRANT REVOKE DENY BACKUP RESTORE BULK
 OPENROWSET OPENQUERY OPENDATASOURCE OPENXML DBCC KILL SHUTDOWN RECONFIGURE WAITFOR RAISERROR THROW PRINT GOTO
 RETURN IF WHILE BEGIN COMMIT ROLLBACK SAVE TRAN TRANSACTION USE ENABLE DISABLE SETUSER REVERT
-ADD WRITETEXT UPDATETEXT RECEIVE SEND
+ADD WRITETEXT UPDATETEXT RECEIVE SEND CONVERSATION DIALOG
 xp_* sp_*
 UPDLOCK XLOCK TABLOCKX HOLDLOCK SERIALIZABLE REPEATABLEREAD TABLOCK
 """
 _DENY_WORDS = frozenset(w.upper() for w in DENY_LIST.split() if not w.endswith("*"))
 _DENY_PREFIXES = tuple(w[:-1].upper() for w in DENY_LIST.split() if w.endswith("*"))
 # Refused words that make plausible column names, for which a refusal says how to write the name so it passes.
-_FALSE_FRIENDS = frozenset("SAVE USE RETURN IF PRINT KILL ENABLE DISABLE ADD SEND RECEIVE BULK DENY BACKUP".split())
+_FALSE_FRIENDS = frozenset(("SAVE USE RETURN IF PRINT KILL ENABLE DISABLE ADD SEND RECEIVE BULK DENY BACKUP "
+                           "CONVERSATION DIALOG").split())
 # Reserved words that begin a statement and never stand inside a SELECT. At the top level one of them starts another
 # statement, semicolon or not; only DECLARE and SET may, and only before the SELECT. FETCH after ROW or ROWS is part
 # of the SELECT's OFFSET ... FETCH.
 _STATEMENT_WORDS = frozenset("DECLARE SET OPEN CLOSE DEALLOCATE FETCH READTEXT CHECKPOINT".split())
 
-# What the probe and check treat as able to write: the server role sysadmin, these database roles, and these
-# database-scope permissions. Neither sees grants on single objects.
+# What the probe and check treat as able to write: the server role sysadmin, these database roles, these database-scope
+# permissions, and these permissions on any one schema (GRANT INSERT ON SCHEMA::dbo). Neither sees grants on single
+# objects, columns or other securables.
 WRITE_ROLES = ("db_owner", "db_datawriter", "db_ddladmin")
 WRITE_PERMISSIONS = ("INSERT", "UPDATE", "DELETE", "ALTER", "CONTROL", "CREATE TABLE", "CREATE PROCEDURE",
                      "CREATE FUNCTION", "CREATE VIEW", "ALTER ANY SCHEMA", "TAKE OWNERSHIP", "ALTER ANY USER",
                      "ALTER ANY ROLE")
+SCHEMA_PERMISSIONS = ("INSERT", "UPDATE", "DELETE", "ALTER", "CONTROL", "TAKE OWNERSHIP")
 GUARD_MARK = "sql-read-guard:"
 # The user's override of the probe: connection names, comma-separated, or * for all, whose login may write.
 WRITABLE_OK = "SQL_READ_WRITABLE_OK"
@@ -107,6 +112,8 @@ PROBE = (
     "   OR EXISTS (SELECT 1 FROM sys.fn_my_permissions(NULL, 'DATABASE') WHERE permission_name IN\n"
     "      ('INSERT','UPDATE','DELETE','ALTER','CONTROL','CREATE TABLE','CREATE PROCEDURE','CREATE FUNCTION',\n"
     "       'CREATE VIEW','ALTER ANY SCHEMA','TAKE OWNERSHIP','ALTER ANY USER','ALTER ANY ROLE'))\n"
+    "   OR EXISTS (SELECT 1 FROM sys.schemas AS s CROSS APPLY sys.fn_my_permissions(QUOTENAME(s.name), 'SCHEMA') AS p\n"
+    "      WHERE p.permission_name IN ('INSERT','UPDATE','DELETE','ALTER','CONTROL','TAKE OWNERSHIP'))\n"
     f"  THROW 50001, '{GUARD_MARK} this login can write to this database', 1;")
 # check's query: a row for each way the login can write; none means read-only.
 CHECK_SQL = (
@@ -119,6 +126,9 @@ CHECK_SQL = (
     "        WHERE permission_name IN ('INSERT','UPDATE','DELETE','ALTER','CONTROL','CREATE TABLE',\n"
     "            'CREATE PROCEDURE','CREATE FUNCTION','CREATE VIEW','ALTER ANY SCHEMA','TAKE OWNERSHIP',\n"
     "            'ALTER ANY USER','ALTER ANY ROLE')\n"
+    "    UNION ALL SELECT 'permission', p.permission_name + ' ON SCHEMA::' + s.name FROM sys.schemas AS s\n"
+    "        CROSS APPLY sys.fn_my_permissions(QUOTENAME(s.name), 'SCHEMA') AS p\n"
+    "        WHERE p.permission_name IN ('INSERT','UPDATE','DELETE','ALTER','CONTROL','TAKE OWNERSHIP')\n"
     ") AS found\n"
     "ORDER BY kind DESC, name;")
 TIMED_OUT = ("if the connection signs in with Azure AD interactively, open it once in LINQPad first to cache the "
@@ -167,8 +177,9 @@ def guard(sql):
 
     Comments (-- and nested /* */) are dropped and 'strings', [names] and "names" are taken whole, so nothing in them
     counts. Accepted only when all of these hold:
-      1. the SQL is not empty, is at most 64 KB as UTF-8, does not start with < as markup does (a .linq script or a
-         connection list, which the reason never quotes), and has no line a client would take for GO or a command;
+      1. the SQL is not empty, is at most 64 KB as UTF-8, does not start with < as markup does and holds no
+         markup tag (</, <?, <!, /> or <Word>) anywhere, as a .linq script or a connection list would; has no line a
+         client would take for GO or a command;
       2. before the main statement there are only DECLARE @... and SET @... statements (so SET ROWCOUNT is refused);
       3. the main statement begins SELECT or WITH and is the last: after its top-level ';' come only more ';', and
          no reserved word that starts a statement (DECLARE, SET, OPEN, FETCH ...) follows it at the top level;
@@ -178,6 +189,10 @@ def guard(sql):
     string or name, unbalanced parentheses, a -- comment holding a line break other than LF or CRLF, and a control or
     invisible character outside a string. A word glued to a character that is not part of a name is checked part by
     part, and in its NFKC form, so a refused word cannot hide in it.
+
+    A reason never quotes the SQL: it names a deny-list entry (a word of DENY_LIST, or sp_* and xp_*), a keyword of the
+    shape check, or a line number, so that text a file holds by mistake, a password or an .env line, is not repeated
+    on stderr, in the plan or in the prompt.
     """
     if not isinstance(sql, str):
         return False, "the SQL is not text"
@@ -198,6 +213,10 @@ def guard(sql):
     if not tokens:
         return False, "the SQL is empty: it holds nothing but whitespace and comments"
     line_of, last = _line_numbers(sql), 0
+    markup = _markup(tokens)
+    if markup is not None:
+        return False, (f"line {line_of(markup.start)} holds markup, as a .linq script or a connection list does: give "
+                       "the T-SQL alone")
     for t in tokens:
         line = line_of(t.start)
         if line != last and t.kind == "word" and _up(t.text) == "GO":
@@ -207,13 +226,16 @@ def guard(sql):
     for k, t in enumerate(tokens):
         part = _denied(t.text) if t.kind == "word" and not _merge_hint(tokens, k) else None
         if part and part not in offenders:
-            offenders[part] = t.text
+            offenders[part] = (t.text, line_of(t.start))
     if offenders:
-        return False, _deny_reason(offenders)
+        # USE HINT and USE PLAN are query hints, which no bracket makes pass: no hint to write USE as a name for them.
+        hint = any(t.kind == "word" and _up(t.text) == "USE" and k + 1 < len(tokens) and tokens[k + 1].kind == "word"
+                   and _up(tokens[k + 1].text) in ("HINT", "PLAN") for k, t in enumerate(tokens))
+        return False, _deny_reason(offenders, brackets=not hint)
     words = [_up(t.text) if t.kind == "word" else None for t in tokens]
     if any(words[k:k + 3] == ["NEXT", "VALUE", "FOR"] for k in range(len(words) - 2)):
         return False, "NEXT VALUE FOR is refused: it advances a sequence, which is a write"
-    why = _shape(sql, tokens)
+    why = _shape(tokens, line_of)
     if why:
         return False, why
     return True, "one SELECT or WITH statement"
@@ -223,7 +245,8 @@ def _client_line(number, line):
     head = line.strip()
     if head[:2].upper() == "GO":
         return f"line {number} starts with GO, a batch separator: send one batch, with no GO"
-    return f"line {number} starts with {_visible(head[:12])}, a client command: send T-SQL alone"
+    sign = "!!" if head.startswith("!!") else ":"
+    return f"line {number} starts with {sign}, a client command: send T-SQL alone"
 
 
 def _scan(sql):
@@ -307,11 +330,31 @@ def _line_numbers(sql):
 
 
 def _denied(word):
-    """The refused word or prefix that word is, or holds next to a character no keyword holds; else None."""
+    """The deny-list entry that word is, or holds next to a character no keyword holds: the refused word, upper-cased,
+    or its prefix with a *, as SP_*; else None."""
     for form in (word.upper(), unicodedata.normalize("NFKC", word).upper()):
         for part in _NOT_NAME.split(form):
-            if part in _DENY_WORDS or part.startswith(_DENY_PREFIXES):
+            if part in _DENY_WORDS:
                 return part
+            for prefix in _DENY_PREFIXES:
+                if part.startswith(prefix):
+                    return prefix + "*"
+    return None
+
+
+def _markup(tokens):
+    """The first token of a markup tag the SQL holds, else None: </, <?, <! or /> with nothing between, or <Word>. No
+    T-SQL has these shapes, and a .linq script or a connection list, which hold a password, is made of them."""
+    for k in range(len(tokens) - 1):
+        a, b = tokens[k], tokens[k + 1]
+        if a.kind != "op" or b.start != a.start + 1:
+            continue
+        if (a.text == "<" and b.kind == "op" and b.text in "/?!") or (a.text == "/" and _is(b, ">")):
+            return a
+        after = tokens[k + 2] if k + 2 < len(tokens) else None
+        if (a.text == "<" and b.kind == "word" and after is not None and after.start == b.start + len(b.text)
+                and _is(after, ">")):
+            return a
     return None
 
 
@@ -325,17 +368,25 @@ def _merge_hint(tokens, k):
             and _up(after.text) in ("JOIN", "UNION"))
 
 
-def _deny_reason(offenders):
-    # A spelling that is not plain ASCII also names the word it reads as: dotless-i "insert" is INSERT.
-    names = [text if text.isascii() and text.upper() == part else f"{text} ({part})" for part, text in offenders.items()]
+def _deny_reason(offenders, brackets=True):
+    # What a reason names is the deny-list entry. A word written plainly is shown as written (it is the entry, in some
+    # case); anything else, a name that starts sp_ or a spelling that is not plain ASCII, is shown as the entry and the
+    # line it stands on, never as the text.
+    def name(entry, text, line):
+        if not entry.endswith("*") and text.isascii() and text.upper() == entry:
+            return text
+        return f"{entry.lower() if entry.endswith('*') else entry} (line {line})"
+    names = [name(entry, *found) for entry, found in offenders.items()]
     shown = names[:6] + ([f"{len(names) - 6} more"] if len(names) > 6 else [])
     why = f"{_and(shown)} {'is' if len(names) == 1 else 'are'} refused: the SQL may only read, as one SELECT"
-    if all(part in _FALSE_FRIENDS for part in offenders):
-        why += f"; a column or table with that name passes in brackets, as [{next(iter(offenders.values()))}]"
+    if brackets and all(entry in _FALSE_FRIENDS for entry in offenders):
+        text, _ = next(iter(offenders.values()))
+        why += ("; a column or table with that name passes in brackets, as "
+                f"[{text if text.isascii() else 'name'}]")
     return why
 
 
-def _shape(sql, tokens):
+def _shape(tokens, line_of):
     """Why the statements are not one SELECT or WITH with only DECLARE @ and SET @ before it; None when they are."""
     main = next((k for k, t in enumerate(tokens)
                  if t.depth == 0 and t.kind == "word" and _up(t.text) in ("SELECT", "WITH")), None)
@@ -348,8 +399,8 @@ def _shape(sql, tokens):
             first, second = statement[0], statement[1] if len(statement) > 1 else None
             if not (first.kind == "word" and _up(first.text) in ("DECLARE", "SET") and second is not None
                     and second.kind == "word" and second.text.startswith("@") and not second.text.startswith("@@")):
-                return (f"before the SELECT, only DECLARE @\u2026 and SET @\u2026 may come, not "
-                        f"{_snippet(sql, statement)}")
+                return (f"before the SELECT, only DECLARE @\u2026 and SET @\u2026 may come, and line "
+                        f"{line_of(first.start)} starts {_keyword(first)} instead")
             statement = []
         if t is not None and not _is(t, ";"):
             statement.append(t)
@@ -360,11 +411,18 @@ def _shape(sql, tokens):
         if _is(t, ";"):
             rest = [u for u in tokens[k + 1:] if not _is(u, ";")]
             if rest:
-                return f"only one statement may run, and {_snippet(sql, rest)} follows the SELECT's semicolon"
+                return f"only one statement may run, and line {line_of(rest[0].start)} follows the SELECT's semicolon"
             return None
         if _starts_statement(tokens, k):
-            return f"only one statement may run, and {_visible(t.text)} starts another after the SELECT"
+            return (f"only one statement may run, and {_up(t.text)} starts another after the SELECT (line "
+                    f"{line_of(t.start)})")
     return None
+
+
+def _keyword(token):
+    """A token named in a reason: the keyword when it is one the shape check knows, else only that it is a name."""
+    word = _up(token.text) if token.kind == "word" else ""
+    return word if word in _STATEMENT_WORDS or word in ("DECLARE", "SET") else "something else"
 
 
 def _is(token, character):
@@ -385,12 +443,6 @@ def _up(word):
     """A word as the shape checks compare it: NFKC-normalized, then upper-cased, as the deny list's check reads it
     too. Folding more than SQL Server does can only refuse more, or pass text SQL Server will not run."""
     return unicodedata.normalize("NFKC", word).upper()
-
-
-def _snippet(sql, tokens):
-    """The start of a statement as written, its first three tokens and what lies between, on one line."""
-    last = tokens[:3][-1]
-    return _visible(" ".join(sql[tokens[0].start:last.start + len(last.text)].split()))[:40]
 
 
 def _describe(ch):
@@ -657,12 +709,12 @@ def plan_for_command(argv, cwd=None):
 
     The dict holds PLAN_KEYS, always with "exit", the code read.py plan would exit with (0, 2, 3 or 4; 1 for an
     error nobody expected), and "error", which says why when that is not 0. A bad command line gives exit 2. For
-    "connections" the plan is empty with exit 0, and for --help it carries "help": True."""
+    "connections" and "rules" the plan is empty with exit 0, and for --help it carries "help": True."""
     try:
         args = [str(a) for a in argv]
     except TypeError:
         return _blank(None, 2, "the command line is not a list of arguments")
-    command = args[0] if args and args[0] in ("connections", "plan", "check", "query") else None
+    command = args[0] if args and args[0] in ("connections", "rules", "plan", "check", "query") else None
     try:
         opts = _parser().parse_args(args)
     except _Stop as stop:
@@ -672,8 +724,8 @@ def plan_for_command(argv, cwd=None):
         plan["help"] = True
         return plan
     try:
-        if opts.command == "connections":
-            return _blank("connections")
+        if opts.command in ("connections", "rules"):
+            return _blank(opts.command)
         return _plan(opts, os.getcwd() if cwd is None else str(cwd))[0]
     except (Exception, SystemExit) as e:
         return _blank(command, 1, f"unexpected error: {type(e).__name__}: {e}")
@@ -702,6 +754,8 @@ def _reason(plan):
         return f"sql-read: prints the usage of read.py{' ' + command if command else ''}; runs nothing"
     if command == "connections":
         return "sql-read: lists the saved connections; touches no database"
+    if command == "rules":
+        return "sql-read: prints the allow rules for this install; touches no database"
     if code == 2 or command not in ("query", "check"):
         return f"sql-read: the command line is not valid, so nothing will run: {_visible(error or 'no command')}"
     if code == 1:
@@ -874,6 +928,10 @@ def _parser():
                              help="the connection's display name")
         command.add_argument("--timeout", type=_seconds, default=DEFAULT_TIMEOUT, metavar="S",
                              help=f"seconds before the run is stopped (default {DEFAULT_TIMEOUT})")
+        command.add_argument("--out", metavar="DIR", help="where the run's script goes (default: beside --sql; for "
+                             "check, a sql-read folder in the temp folder)")
+        command.add_argument("--name", type=_file_name, metavar="NAME",
+                             help="the script's file name, without extension (default: --sql's; for check, check)")
         if name == "check":
             continue
         command.add_argument("--sql", required=name == "query", metavar="FILE",
@@ -887,9 +945,6 @@ def _parser():
         command.add_argument("--nolock", action="store_true", help="read uncommitted rows: dirty reads")
         command.add_argument("--allow-writable-login", action="store_true",
                              help="leave out the check that stops the run when the login can write")
-        command.add_argument("--out", metavar="DIR", help="where the run's script goes (default: beside --sql)")
-        command.add_argument("--name", type=_file_name, metavar="NAME",
-                             help="the script's file name, without extension (default: --sql's)")
     return top
 
 
@@ -992,21 +1047,23 @@ def _summary(who, plan, stdout, elapsed):
 
 
 def _verdict(who, stdout):
-    """check's verdict from its rows: 0 for none, read-only; 5 when the login can write. A first row that is not the
-    kind,name header counts as a capability, so output with no header never reads as read-only."""
+    """check's verdict from its rows: 0 for none, read-only; 5 when the login can write. Output that does not start
+    with the kind,name header, empty output included, is no verdict: exit 1, never read-only."""
     records = _records(stdout)
     if records is None:
         _say(f"sql-read: {who}: the check's output could not be read as CSV; read it above")
         return 1
-    if records and [f.strip().lower() for f in records[0]] == ["kind", "name"]:
-        records = records[1:]
-    found = [" ".join(_visible(f.strip()) for f in r) for r in records if any(f.strip() for f in r)]
+    if not records or [f.strip().lower() for f in records[0]] != ["kind", "name"]:
+        _say(f"sql-read: {who}: the check printed no kind,name header, so it did not run to its end and says "
+             "nothing about what the login can write" + ("" if records else "; it printed nothing"))
+        return 1
+    found = [" ".join(_visible(f.strip()) for f in r) for r in records[1:] if any(f.strip() for f in r)]
     if found:
         _say(f"sql-read: {who}: this login can write ({', '.join(found)}); query refuses to run with it, so ask for a "
              "login that can only read")
         return 5
-    _say(f"sql-read: {who}: read-only: no write role and no database permission to write (grants on single objects "
-         "are not checked)")
+    _say(f"sql-read: {who}: read-only: no write role, no database permission and no schema permission to write "
+         "(grants on single objects are not checked)")
     return 0
 
 

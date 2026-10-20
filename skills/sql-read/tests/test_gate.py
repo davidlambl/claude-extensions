@@ -55,6 +55,12 @@ def unread(*whys):
     return f"{UNREAD} ({'; '.join(whys)})"
 
 
+def hook_ifs():
+    """The `if` patterns of hooks.json, the ones that start the gate."""
+    config = json.loads(HOOKS.read_text(encoding="utf-8"))
+    return [h["if"] for group in config["hooks"]["PreToolUse"] for h in group["hooks"]]
+
+
 def load_gate():
     """gate.py as a module, for the tests of its parts."""
     spec = importlib.util.spec_from_file_location("sql_read_gate", GATE)
@@ -143,7 +149,11 @@ class GateCase(unittest.TestCase):
     def decide(self, command, tool="Bash", env=None, **kw):
         return self.decision(self.run_gate(self.hook(command, tool, **kw), env=env))
 
-    def asks(self, command, tool="Bash", **kw):
+    def asks(self, command, tool="Bash", fires=True, **kw):
+        """The gate asks for the command, and, unless fires is False, Claude Code would start the gate for it: a form
+        the gate asks for when driven directly but the hook's `if` patterns never pass would be let through."""
+        if fires:
+            self.assertTrue(matches(hook_ifs(), tool, command), f"{tool} {command!r}: no `if` pattern starts the gate")
         got = self.decide(command, tool, **kw)
         self.assertIsNotNone(got, f"{tool} {command!r} was let through silently")
         self.assertEqual(got[0], "ask", got)
@@ -220,6 +230,34 @@ class Reads(GateCase):
         self.asks_each([f"& {run}", f"$out = {run}", f"pwsh -c '{run}'", f"iex '{run}'",
                         f"Start-Process python3 -ArgumentList '{READ_PY} {tail}' -Wait -NoNewWindow",
                         f"cmd /c {run}", f"python3 {READ_PY} --% {tail}"], tools=["PowerShell"], equals=Q)
+
+    def test_start_process_splits_an_argument_list_as_the_program_will(self):
+        # Start-Process joins an -ArgumentList's pieces with spaces and the program splits the line again, so a piece
+        # that holds several arguments is several.
+        args = ("query", "--cx", "Sales", "--sql", self.p("q.sql"))
+        for command in (f"Start-Process python3 '{READ_PY}','query --cx Sales --sql {self.p('q.sql')}' -Wait",
+                        f"Start-Process python3 -ArgumentList '{READ_PY}','query --cx Sales','--sql {self.p('q.sql')}'",
+                        f"Start-Process python3 -ArgumentList '{READ_PY}','query','--cx Sales --sql',"
+                        f"'{self.p('q.sql')}' -Wait -NoNewWindow",
+                        f"Start-Process -FilePath python3 -ArgumentList '{READ_PY}','query --cx Sales',"
+                        f"'--sql {self.p('q.sql')}'"):
+            with self.subTest(command=command):
+                self.assertEqual(self.asks(command, "PowerShell"), self.expected(*args))
+
+    def test_start_process_with_a_group_or_a_scriptblock_asks_though_the_gate_cannot_read_it(self):
+        tail = f"query --cx Sales --sql {self.p('q.sql')}"
+        for command in (f'Start-Process python3 -ArgumentList ("{READ_PY} {tail}") -Wait',
+                        f"Start-Process python3 -ArgumentList ('{READ_PY} ' + 'query') -Wait",
+                        f"& ([scriptblock]::Create('python3 {READ_PY} {tail}'))",
+                        f"& (Get-Command python3).Source -c ('{READ_PY}')"):
+            with self.subTest(command=command):
+                reason = self.asks(command, "PowerShell")
+                self.assertTrue(reason.startswith(UNREAD), reason)
+
+    def test_a_computed_command_in_a_line_that_names_no_read_py_run_is_not_asked_about(self):
+        # The group rule needs the line to name read.py; any other group is not the gate's business.
+        self.silent_each(["Start-Process notepad -ArgumentList (Get-Item x)", "& ([scriptblock]::Create('dir'))",
+                          "echo ('read.py is a file')", f"Write-Host (\"{READ_PY}\")"], tools=["PowerShell"])
 
     def test_start_process_takes_its_parameters_in_any_order(self):
         listed = f"'{READ_PY}','query','--cx','Sales','--sql','{self.p('q.sql')}'"
@@ -432,6 +470,15 @@ class Silence(GateCase):
                 payload = json.loads(self.hook(""))
                 payload["tool_input"] = tool_input
                 self.assertIsNone(self.decision(self.run_gate(json.dumps(payload).encode())))
+
+    def test_a_long_path_keeps_the_sql_files_name_in_the_prompt(self):
+        # Windows scratch paths run past the 120 characters the prompt shows: the middle goes, not the end.
+        long = f"{self.dir.as_posix()}/{'d' * 150}/orders-by-region.sql"
+        self.asks_each([f"{RUN} query --cx Sales --sql {long}"], starts=UNREAD,
+                       has="orders-by-region.sql: the gate cannot open it")
+        reason = self.asks(f"{RUN} query --cx Sales --sql {long}")
+        self.assertIn("...", reason)
+        self.assertNotIn("d" * 150, reason)
 
     def test_text_that_only_mentions_read_py(self):
         q = self.p("q.sql")
@@ -767,8 +814,10 @@ class HooksJson(unittest.TestCase):
 
     # Any command that names read.py, or runs a module named read, starts the gate, which decides; plan and
     # connections pass in silence
-    IFS = ["Bash(*read.py*)", "Bash(*m read *)", "Bash(*mread *)", "PowerShell(*read.py*)", "PowerShell(*m read *)",
-           "PowerShell(*mread *)"]
+    # A Bash pattern matches the case written and Windows does not care how a file is cased, so the one for read.py is
+    # a short fragment of it, d.p, in each of its four casings.
+    IFS = ["Bash(*d.p*)", "Bash(*D.p*)", "Bash(*d.P*)", "Bash(*D.P*)", "Bash(*m read *)", "Bash(*mread *)",
+           "PowerShell(*read.py*)", "PowerShell(*m read *)", "PowerShell(*mread *)"]
 
     def setUp(self):
         self.config = json.loads(HOOKS.read_text(encoding="utf-8"))
@@ -800,6 +849,11 @@ class HooksJson(unittest.TestCase):
                               ("Bash", "cd /x && python3 read.py query --cx Sales --sql q.sql"),
                               ("Bash", "python3 read.py plan --cx Sales --sql query.sql"),
                               ("Bash", "python3 '/x/read.py' 'query' --cx Sales --sql q.sql"),
+                              # NTFS keeps no case, and a Bash pattern does: every casing of the name must fire.
+                              ("Bash", "python3 /x/READ.PY query --cx Sales --sql q.sql"),
+                              ("Bash", "python3 /x/Read.py query --cx Sales --sql q.sql"),
+                              ("Bash", "python3 /x/read.PY check --cx Sales"),
+                              ("Bash", "python3 /x/ReAd.Py check --cx Sales"),
                               ("Bash", "cd /x/scripts && python3 -m read query --cx Sales --sql /x/q.sql"),
                               ("Bash", "py -3 -mread check --cx Sales"),
                               ("Bash", 'cp "/x/read.py" r.py && python3 r.py query --cx Sales --sql q.sql'),
@@ -833,6 +887,9 @@ class ReadmeAskRules(unittest.TestCase):
         tail = "--cx Sales --sql q.sql"
         for tool, command in [("Bash", f'python3 "C:/x/scripts/read.py" query {tail}'),
                               ("Bash", "python3 /x/read.py check --cx Sales"),
+                              ("Bash", f"python3 /x/READ.PY query {tail}"),
+                              ("Bash", f"python3 /x/Read.py query {tail}"),
+                              ("Bash", "python3 /x/READ.PY check --cx Sales"),
                               ("Bash", f"cd /x && python3 read.py query {tail}"),
                               ("Bash", f"python3 '/x/read.py' 'query' {tail}"),
                               ("Bash", 'python3 read.py "check" --cx Sales'),

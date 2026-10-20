@@ -6,7 +6,7 @@ replaced by a fake registry and a fake transport where a test needs them. The te
 (what importing read.py does, a backend module that is missing) run a copy of the scripts folder holding read.py and
 backend.py alone, with stand-in backend modules where a test wants them. test_run.py borrows the fakes and helpers
 defined here. Characters outside ASCII are written as escapes."""
-import codecs, dataclasses, io, json, os, shutil, subprocess, sys, tempfile, unittest
+import codecs, dataclasses, io, json, os, shutil, subprocess, sys, tempfile, threading, unittest
 from pathlib import Path
 from unittest import mock
 
@@ -35,6 +35,8 @@ PROBE = (
     "   OR EXISTS (SELECT 1 FROM sys.fn_my_permissions(NULL, 'DATABASE') WHERE permission_name IN\n"
     "      ('INSERT','UPDATE','DELETE','ALTER','CONTROL','CREATE TABLE','CREATE PROCEDURE','CREATE FUNCTION',\n"
     "       'CREATE VIEW','ALTER ANY SCHEMA','TAKE OWNERSHIP','ALTER ANY USER','ALTER ANY ROLE'))\n"
+    "   OR EXISTS (SELECT 1 FROM sys.schemas AS s CROSS APPLY sys.fn_my_permissions(QUOTENAME(s.name), 'SCHEMA') AS p\n"
+    "      WHERE p.permission_name IN ('INSERT','UPDATE','DELETE','ALTER','CONTROL','TAKE OWNERSHIP'))\n"
     "  THROW 50001, 'sql-read-guard: this login can write to this database', 1;\n")
 # What comes before the user's SQL by default, exactly as the plan lays it out.
 PRELUDE = "SET NOCOUNT ON;\nSET LOCK_TIMEOUT 5000;\n" + PROBE + "SET ROWCOUNT 200;\n"
@@ -212,6 +214,11 @@ class Batch(unittest.TestCase):
                 with self.assertRaises((TypeError, ValueError)):
                     read.batch("SELECT 1 AS x", lock_timeout_ms=bad)
 
+    def test_rules_has_an_empty_plan_and_a_reason_not_an_attribute_error(self):
+        plan = read.plan_for_command(["rules"])
+        self.assertEqual((plan["command"], plan["exit"], plan["error"]), ("rules", 0, None))
+        self.assertIn("touches no database", read.reason(plan))
+
     def test_the_check_batch_is_the_prelude_without_the_cap_or_the_throw_then_the_check_query(self):
         self.assertEqual(read.check_batch(), "SET NOCOUNT ON;\nSET LOCK_TIMEOUT 5000;\n" + read.CHECK_SQL)
         self.assertNotIn("THROW", read.check_batch())
@@ -225,7 +232,17 @@ class Batch(unittest.TestCase):
         for permission in read.WRITE_PERMISSIONS:
             self.assertIn(f"'{permission}'", PROBE)
             self.assertIn(f"'{permission}'", read.CHECK_SQL)
+        for permission in read.SCHEMA_PERMISSIONS:
+            self.assertIn(f"'{permission}'", PROBE)
+            self.assertIn(f"'{permission}'", read.CHECK_SQL)
         self.assertIn(read.GUARD_MARK, PROBE)
+
+    def test_the_probe_and_the_check_look_at_schema_grants_one_schema_at_a_time(self):
+        # GRANT INSERT ON SCHEMA::dbo is no database-scope permission: fn_my_permissions(NULL, 'DATABASE') lists
+        # none of it, so each schema is asked for its own, and a schema name is quoted so a dot cannot split it.
+        for text in (PROBE, read.CHECK_SQL):
+            self.assertIn("sys.fn_my_permissions(QUOTENAME(s.name), 'SCHEMA')", text)
+            self.assertIn("FROM sys.schemas AS s", text)
 
 
 class SqlFile(Harness):
@@ -272,10 +289,18 @@ class SqlFile(Harness):
     @unittest.skipUnless(hasattr(os, "mkfifo"), "a named pipe is a POSIX matter")
     def test_a_pipe_given_as_the_sql_file_is_refused_not_read(self):
         # Reading a pipe nobody writes to waits for ever; a hook calling plan_for_command has seconds.
+        # A plan that tried would hang the suite, so it is made in a thread that the test stops waiting for after ten
+        # seconds, and fails rather than waits.
         self.use()
         pipe = self.dir / "q.sql"
         os.mkfifo(pipe)
-        plan = read.plan_for_command(["query", "--cx", "Sales", "--sql", str(pipe)])
+        made = []
+        worker = threading.Thread(daemon=True, target=lambda: made.append(
+            read.plan_for_command(["query", "--cx", "Sales", "--sql", str(pipe)])))
+        worker.start()
+        worker.join(10)
+        self.assertFalse(worker.is_alive(), "the plan is waiting to read the pipe")
+        [plan] = made
         self.assertEqual(plan["exit"], 2)
         self.assertIn("is not a regular file", plan["error"])
 

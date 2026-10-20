@@ -248,6 +248,10 @@ def _parse(path: str, origin: str | None) -> list[dict[str, str]]:
                        f"{_POINT}") from None
     except _Refused as e:
         raise NotFound(f"{_named(path, origin)} {e}, so it is not read. {_POINT}") from None
+    except LookupError:
+        # The declaration names an encoding Python has no codec for; its name is the file's text, so it is not quoted.
+        raise NotFound(f"{_named(path, origin)} declares an encoding Python does not know, so it is not read. "
+                       f"{_POINT}") from None
     if reader.root != "Connections":
         raise NotFound(f"{_named(path, origin)} is not LINQPad's connection list: its root element is not "
                        f"<Connections>. {_POINT}")
