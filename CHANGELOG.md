@@ -254,3 +254,22 @@ In the docs and evals:
 
 - First release. Uploads images as work item attachments, posts or revises a captioned markdown comment, then reads it back and checks that every image rendered.
 - The token goes only to `dev.azure.com` or `<org>.visualstudio.com`, and an image is named by its file name alone.
+
+## linqpad
+
+### 0.1.0 — 2026-10-20
+
+- First release. Runs C# and .NET code from a file with LINQPad 9's `lprun9`, as a .NET 10 file-based app (a `.cs` file of top-level statements, which `dotnet run` runs too) or as a `.linq` script, and answers from what the run printed.
+- A PreToolUse hook on the Bash and PowerShell tools asks before any `lprun9` run that touches a saved LINQPad connection: one with `-cxname=`, or of a script whose first 8 KB hold a `<Connection>`. The prompt names the connection. A run it cannot read asks too, and in the `bypassPermissions` and `dontAsk` modes each ask becomes a deny.
+- The hook reads only the scripts a command names, and the skill never opens `ConnectionsV2.xml`, where LINQPad keeps the saved connections and their passwords. Reads from a database go through sql-read.
+- On macOS `lprun9` is in LINQPad 9's app bundle, `/Applications/LINQPad 9.app/Contents/MacOS/lprun9`, and the command names it by that path. LINQPad 9.10.20 there ran a `.cs` file only with `-lang=program`, which the skill passes when lprun9 asks for a language; 9.11.10 on Windows ran it bare.
+
+## sql-read
+
+### 0.1.0 — 2026-10-20
+
+- First release. `read.py` reads from a SQL Server database through a connection saved in LINQPad, production included, with LINQPad 9's `lprun9` running the SQL and supplying the credential: only the connection's name reaches it, and the list's `Password` element is never read out. `connections` lists the saved connections, `plan` shows what a run would do without running it, `query` runs one SELECT, `check` lists what the login can write, and `rules` prints the allow rules that let `--allow-writable-login` past auto mode's classifier.
+- The guard accepts one `SELECT` or `WITH` statement, with only `DECLARE @…` and `SET @…` before it, no markup and no word from the deny list, and refuses anything else before a connection is looked up. A refusal's reason names the word, the keyword or the line number, never the SQL.
+- The probe, in the batch before the SELECT, stops the run with exit 5 and nothing run when the login holds `sysadmin`, `db_owner`, `db_datawriter` or `db_ddladmin`, a database permission to write, or a write permission on a schema. Only `--allow-writable-login` leaves it out, which Claude passes for a connection the user lists in `SQL_READ_WRITABLE_OK`. `SET ROWCOUNT` caps the rows at 200, and the run has a timeout and a lock timeout.
+- A PreToolUse hook on the Bash and PowerShell tools asks before every `query` and `check`, with the plan as its reason: the connection, its server and database, the production flag, the row cap and the SQL. `plan` and `connections` never prompt. In the `bypassPermissions` and `dontAsk` modes it refuses instead.
+- `lprun9` is found by `--lprun`, the environment variable `LPRUN9`, the `PATH`, then where LINQPad 9 installs it: under Program Files or `%LOCALAPPDATA%` on Windows, in its app bundle under `/Applications` or `~/Applications` on macOS. The connection list is `%APPDATA%\LINQPad\ConnectionsV2.xml` where `APPDATA` is set, else `~/Library/Application Support/LINQPad/ConnectionsV2.xml` on macOS. Exit 3 lists every place looked at.
