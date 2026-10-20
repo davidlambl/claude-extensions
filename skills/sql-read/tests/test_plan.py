@@ -248,6 +248,20 @@ class Batch(unittest.TestCase):
             self.assertIn("FROM sys.schemas AS s", text)
             self.assertNotIn("QUOTENAME", text)
 
+    def test_the_check_query_gives_each_catalog_string_the_databases_collation(self):
+        # check's name column joins strings from fn_my_permissions and sys.schemas, and UNION ALL combines its
+        # branches. On a server whose catalog and database collations differ, SQL Server cannot choose between two
+        # implicit collations and fails with error 451, as a test server did on 2026-10-20 (SQL_Latin1_General_CP1_CI_AS
+        # against Latin1_General_CI_AI, "in add operator occurring in ORDER BY statement column 2"). An explicit
+        # COLLATE DATABASE_DEFAULT on each catalog string settles both. The probe joins no strings: its IN lists compare
+        # a column with literals, which take the column's collation.
+        self.assertIn("SELECT 'permission', permission_name COLLATE DATABASE_DEFAULT\n"
+                      "        FROM sys.fn_my_permissions(NULL, 'DATABASE')", read.CHECK_SQL)
+        self.assertIn("(p.permission_name COLLATE DATABASE_DEFAULT) + ' ON SCHEMA::' + (s.name COLLATE DATABASE_DEFAULT)",
+                      read.CHECK_SQL)
+        self.assertNotIn("p.permission_name + ", read.CHECK_SQL)
+        self.assertEqual(read.guard(read.CHECK_SQL), (True, "one SELECT or WITH statement"))
+
     def test_the_readme_shows_the_probe_as_it_is_sent(self):
         # The README's batch is the one place a reader sees the probe's SQL, and it drifted from the code once.
         readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
