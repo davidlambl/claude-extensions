@@ -4,7 +4,7 @@ cap note, check's verdict, and the connections listing. Run with: python3 -m uni
 The fakes and helpers come from test_plan.py. The last tests run read.py in a process of its own, from a copy of the
 scripts folder with stand-in backend modules, under a console whose code page is cp1252 rather than UTF-8, as Git
 Bash gives Python on Windows. Characters outside ASCII are written as escapes."""
-import base64, codecs, csv, json, re, unittest
+import base64, codecs, csv, json, os, re, unittest
 from dataclasses import dataclass
 from pathlib import Path
 from unittest import mock
@@ -70,6 +70,18 @@ class Run(Harness):
         for raw in ("Msg 50001", "LINQPad.Runner", "sql-read-guard"):
             self.assertNotIn(raw, err)
         self.assertEqual(err.count("\n"), 1)
+
+    def test_exit_5_for_a_connection_listed_in_writable_ok_says_how_to_run_it(self):
+        stderr = b"sql-read-guard: this login can write to this database\r\n"
+        with mock.patch.dict(os.environ, {"SQL_READ_WRITABLE_OK": "sales"}):
+            code, _, err, _ = self.query(Result(1, b"", stderr))
+        self.assertEqual(code, 5)
+        self.assertIn("Sales is listed in SQL_READ_WRITABLE_OK", err)
+        self.assertIn(f"{read.run_prefix()} --cx", err)
+        self.assertEqual(err.count("\n"), 1)
+        code, _, err, _ = self.query(Result(1, b"", stderr))
+        self.assertEqual(code, 5)
+        self.assertNotIn("SQL_READ_WRITABLE_OK", err)
 
     def test_with_allow_writable_login_the_marker_means_nothing(self):
         code, _, err, _ = self.query(Result(1, b"", b"sql-read-guard: this login can write to this database\r\n"),
@@ -217,6 +229,30 @@ class Check(Harness):
         self.assertTrue(err.startswith(f"sql-read: {WHO}: this login can write (role db_owner, permission INSERT, "
                                        f"permission ALTER ANY SCHEMA)"), err)
         self.assertEqual(err.count("\n"), 1)
+
+    def test_a_long_verdict_names_the_first_five_and_counts_the_rest(self):
+        # A db_owner login holds every write permission on every schema: a hundred and more, all on stdout already.
+        rows = [f"permission,INSERT ON SCHEMA::s{n}" for n in range(12)]
+        data = ("kind,name\r\n" + "\r\n".join(rows) + "\r\n").encode("ascii")
+        code, out, err, _ = self.check(Result(0, data))
+        self.assertEqual(code, 5)
+        self.assertEqual(out, data)
+        self.assertIn("permission INSERT ON SCHEMA::s4, and 7 more, listed above)", err)
+        self.assertNotIn("SCHEMA::s5", err)
+        self.assertEqual(err.count("\n"), 1)
+        code, _, err, _ = self.check(Result(0, ("kind,name\r\n" + "\r\n".join(rows[:5])).encode("ascii")))
+        self.assertIn("SCHEMA::s4)", err)
+        self.assertNotIn("more", err)
+
+    def test_a_check_of_a_listed_connection_says_query_may_take_the_flag(self):
+        with mock.patch.dict(os.environ, {"SQL_READ_WRITABLE_OK": "*"}):
+            code, _, err, _ = self.check(Result(0, b"kind,name\r\nrole,db_owner\r\n"))
+        self.assertEqual(code, 5)
+        self.assertIn("listed in SQL_READ_WRITABLE_OK", err)
+        self.assertIn("--allow-writable-login", err)
+        self.assertNotIn("ask for a login that can only read", err)
+        code, _, err, _ = self.check(Result(0, b"kind,name\r\nrole,db_owner\r\n"))
+        self.assertIn("ask for a login that can only read", err)
 
     def test_a_check_whose_output_has_no_header_is_no_verdict(self):
         # Exit 0 reads as read-only, so output that is not the check's rows must never get it: not none at all (the
