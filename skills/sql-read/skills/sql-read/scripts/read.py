@@ -1033,13 +1033,18 @@ def _go(opts):
         return 1
     elapsed = time.monotonic() - started
     stdout, stderr = _raw(result.stdout), _raw(result.stderr)
-    _emit(sys.stdout, stdout)
+    # The probe's THROW, as the tool reports it: on stderr, or on stdout from a run that failed. It stops the batch
+    # before the SQL, so stdout then holds only the tool's report of it (an error number, a stack), which is left out
+    # for one clean line. The rows of a run that succeeded are data, whatever text they hold.
+    refused = (plan["command"] == "query" and not plan["allow_writable_login"] and not result.timed_out
+               and (GUARD_MARK in _text(stderr) or (result.exit != 0 and GUARD_MARK in _text(stdout))))
+    if not refused:
+        _emit(sys.stdout, stdout)
     if result.timed_out:
         _emit(sys.stderr, stderr)
         _say(f"sql-read: {who}: timed out after {_secs(plan['timeout'])}; {TIMED_OUT}")
         return 6
-    if plan["command"] == "query" and not plan["allow_writable_login"] and GUARD_MARK in _text(stderr):
-        # The probe's THROW: the tool's own report of it (an error number, a stack) is left out for one clean line.
+    if refused:
         _say(f"sql-read: {who}: this login can write to this database, so nothing ran. The login is the boundary: "
              "use one that can only read (read.py check lists what this one can write)." + _leave(plan))
         return 5

@@ -71,6 +71,20 @@ class Run(Harness):
             self.assertNotIn(raw, err)
         self.assertEqual(err.count("\n"), 1)
 
+    def test_the_probes_throw_on_stdout_is_exit_5_too(self):
+        # lprun9 reports a script's error on stderr; were the probe's THROW to reach stdout instead, it must read the
+        # same: exit 5, with the tool's report left out. Rows of a run that succeeded are data, whatever they say.
+        report = b"Msg 50001, Level 16, State 1, Line 4\r\nsql-read-guard: this login can write to this database\r\n"
+        code, out, err, _ = self.query(Result(1, report, b""))
+        self.assertEqual(code, 5, err)
+        self.assertEqual(out, b"")
+        self.assertTrue(err.startswith(f"sql-read: {WHO}: this login can write to this database, so nothing ran."), err)
+        self.assertNotIn("Msg 50001", err)
+        rows = b"note\r\nsql-read-guard: this login can write to this database\r\n"
+        code, out, err, _ = self.query(Result(0, rows))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out, rows)
+
     def test_exit_5_for_a_connection_listed_in_writable_ok_says_how_to_run_it(self):
         stderr = b"sql-read-guard: this login can write to this database\r\n"
         with mock.patch.dict(os.environ, {"SQL_READ_WRITABLE_OK": "sales"}):

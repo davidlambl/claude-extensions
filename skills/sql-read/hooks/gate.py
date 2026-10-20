@@ -693,14 +693,20 @@ BASH_FUNCTION = re.compile(r"(?:^|[\s;&|(){}])[^\s;&|()<>{}'\"`$=]+[ \t]*\([ \t]
 # folder; for lprun9 LPRUN9, PATH and LOCALAPPDATA; for the probe the user's override SQL_READ_WRITABLE_OK. A line
 # that changes one can make the gate's plan untrue, and one that changes where python finds code (PYTHONPATH,
 # PYTHONHOME and the like) can change what runs as read.py.
-ENVIRONMENT = (r"(?:sql_read_connections|sql_read_writable_ok|lprun9|localappdata|appdata|path|home|userprofile|homedrive|homepath"
+ENVIRONMENT = (r"(?:sql_read_connections|sql_read_writable_ok|lprun9|localappdata|appdata|path|home|userprofile"
+               r"|homedrive|homepath"
                r"|python(?:path|home|userbase|pycacheprefix|platlibdir|caseok|inspect|startup|breakpoint|executable))")
 SETS_ENVIRONMENT = re.compile(
     rf"(?<![\w.:/\\$@%-]){ENVIRONMENT}\s*\+?=(?!=)"  # NAME=x before a command; export, env, declare or cmd's set
-    rf"|env:[\\/]?{ENVIRONMENT}\b|SetEnvironmentVariable"  # PowerShell: $env:NAME = x, Remove-Item Env:\NAME
-    rf"|\bunset\b[^;&|\n]*?\b{ENVIRONMENT}\b"  # unset NAME
-    rf"|\benv\b[^;&|\n]*?\s(?:-u\s*|--unset[=\s]\s*){ENVIRONMENT}\b",  # env -u NAME
+    rf"|env:[\\/]?{ENVIRONMENT}\b|SetEnvironmentVariable",  # PowerShell: $env:NAME = x, Remove-Item Env:\NAME
     re.I)
+# unset NAME, and env -u NAME, within one command of the line: unsets_environment scans each command once from its
+# first unset and once from its first env. A lazy scan from every unset and every env to the end of the command, as one
+# regex had it, was quadratic: a crafted line of `unset x` took 49 s for 156 KB, past the hook's timeout.
+COMMAND_ENDS = re.compile(r"[;&|\n]")
+UNSET_WORD, ENV_WORD = re.compile(r"\bunset\b", re.I), re.compile(r"\benv\b", re.I)
+NAMED = re.compile(rf"\b{ENVIRONMENT}\b", re.I)
+ENV_UNSET = re.compile(rf"\s(?:-u\s*|--unset[=\s]\s*){ENVIRONMENT}\b", re.I)
 CONNECTIONS_NOTE = "\u26a0 details from {}; lprun9 looks the name up in LINQPad's own list"
 
 
@@ -772,7 +778,7 @@ def option_values(arguments, names=PATH_OPTIONS):
 
 def sets_environment(line):
     """What a line changes in the environment the plan reads, or python's, as words for the prompt; or None."""
-    match = SETS_ENVIRONMENT.search(line)
+    match = SETS_ENVIRONMENT.search(line) or unsets_environment(line)
     if match is None:
         return None
     name = re.search(ENVIRONMENT, match.group(0), re.I)
@@ -781,6 +787,21 @@ def sets_environment(line):
     if name.group(0).lower().startswith("python"):
         return f"the line changes {name.group(0)}, which changes how python runs read.py"
     return f"the line changes {name.group(0)}, which the plan reads"
+
+
+def unsets_environment(line):
+    """The match for a variable the plan reads, or python's, that a command of the line unsets: one an `unset` names, or
+    an `env -u` or `env --unset`, after it in the same command; or None. Each command is scanned once from its first
+    unset and once from its first env, so a line of many costs no more than one."""
+    for command in COMMAND_ENDS.split(line):
+        first = UNSET_WORD.search(command)
+        found = first and NAMED.search(command, first.end())
+        if not found:
+            first = ENV_WORD.search(command)
+            found = first and ENV_UNSET.search(command, first.end())
+        if found:
+            return found
+    return None
 
 
 def defines_a_function(commands, line, shell):
