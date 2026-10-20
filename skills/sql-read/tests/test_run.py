@@ -349,8 +349,11 @@ class InAProcess(unittest.TestCase):
         self.tool.write_text(json.dumps(spec), encoding="utf-8")
 
     def read_py(self, *argv, cwd=None):
+        # check writes its script to the temp folder: this test's own, so the stand-in's headerless script never lands
+        # in the user's, where a real check would then refuse it as a file sql-read did not write.
+        temp = str(self.dir / "temp")
         return run_script(self.scripts, *argv, "--connections", self.listing, "--lprun", self.tool, cwd=cwd,
-                          env={"PYTHONIOENCODING": "cp1252"})
+                          env={"PYTHONIOENCODING": "cp1252", "TMPDIR": temp, "TEMP": temp, "TMP": temp})
 
     def test_a_query_end_to_end(self):
         data = "id,name\r\n1,caf\u00e9\r\n2,\u65e5\u672c\r\n".encode("utf-8")
@@ -390,6 +393,7 @@ class InAProcess(unittest.TestCase):
         proc = self.read_py("check", "--cx", "Dev")
         self.assertEqual(proc.returncode, 5, proc.stderr)
         self.assertIn(b"sql-read: Dev (localhost): this login can write (role db_owner)", proc.stderr)
+        self.assertTrue((self.dir / "temp" / "sql-read" / "check.linq").is_file(), "check's script left the test's folder")
 
     def test_the_plan_end_to_end_is_ascii_json(self):
         self.answer()
