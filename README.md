@@ -9,6 +9,8 @@ Mods and skills for [Claude Code](https://claude.com/claude-code), each packaged
 | [context-bar](mods/context-bar/) | mod | Your context window as a meter above the prompt: the conversation, the overhead every request carries, and the room left before compaction, with a drill-down into the overhead. `/context-bar` shows or hides it. |
 | [api-call](skills/api-call/) | skill | Calls an API the way your Insomnia or Postman collection would, with its environment, auth and client certificate, records the exchange with every secret masked, and screenshots it on request. |
 | [ado-evidence](skills/ado-evidence/) | skill | Posts images with captions as a comment on an Azure DevOps work item, or revises one, and checks that each image rendered. Cuts a screenshot down first, with no imaging library. |
+| [linqpad](skills/linqpad/) | skill | Runs C# and .NET code with LINQPad 9's `lprun9`, as a .NET 10 file-based app or a `.linq` script, and asks before any run that touches a saved LINQPad connection. |
+| [sql-read](skills/sql-read/) | skill | Reads from a SQL Server database through a saved LINQPad connection, production included: one SELECT per run, previewed as a plan, refused when the login can write, and approved at a prompt every time. |
 
 ## Install
 
@@ -18,6 +20,8 @@ From a Claude Code prompt in a terminal:
 /plugin install context-bar --marketplace davidlambl/claude-extensions
 /plugin install api-call --marketplace davidlambl/claude-extensions
 /plugin install ado-evidence --marketplace davidlambl/claude-extensions
+/plugin install linqpad --marketplace davidlambl/claude-extensions
+/plugin install sql-read --marketplace davidlambl/claude-extensions
 ```
 
 Answer `y` to add the marketplace, then choose a scope. Mods need Claude Code 2.1.287 or later.
