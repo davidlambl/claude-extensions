@@ -21,7 +21,9 @@ Where lprun9 is found, the first that answers:
   --lprun       a path, made absolute, or a bare program name, looked up on PATH
   env LPRUN9    the same
   PATH          lprun9 (lprun9.exe on Windows), in PATH's absolute folders only, so never the current folder
-  C:\Program Files\LINQPad9\LPRun9.exe, then %LocalAppData%\Programs\LINQPad9\LPRun9.exe
+  where LINQPad 9 installs it, for every user and then for this user alone:
+                on Windows C:\Program Files\LINQPad9\LPRun9.exe, then %LocalAppData%\Programs\LINQPad9\LPRun9.exe
+                on macOS /Applications/LINQPad 9.app/Contents/MacOS/lprun9, then the same under ~/Applications
 A tool that --lprun or LPRUN9 names but that is not there is reported, not looked for elsewhere. On Windows the tool
 must be an .exe: a .cmd or .bat runs through cmd.exe, which would read the connection's name and the script's path
 as commands of its own.
@@ -30,10 +32,12 @@ from __future__ import annotations
 
 import ntpath
 import os
+import posixpath
 import re
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -50,7 +54,10 @@ ENV = "LPRUN9"
 PROGRAM = "lprun9"
 PROGRAM_FILES = r"C:\Program Files\LINQPad9\LPRun9.exe"
 LOCAL_PROGRAMS = r"Programs\LINQPad9\LPRun9.exe"  # under %LocalAppData%
+APPLICATIONS = "/Applications/LINQPad 9.app/Contents/MacOS/lprun9"
+USER_APPLICATIONS = "Applications/LINQPad 9.app/Contents/MacOS/lprun9"  # under ~
 WINDOWS = os.name == "nt"
+MACOS = sys.platform == "darwin"
 STOP_WAIT = 30  # seconds taskkill gets to stop the tree
 DRAIN_WAIT = 10  # seconds to collect what a stopped run wrote
 _NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
@@ -68,7 +75,11 @@ def transport(lprun: str | None = None) -> Lprun9:
 
 
 def installs() -> list[str]:
-    """Where LINQPad 9's installer puts lprun9: for every user, then for this user alone."""
+    """Where LINQPad 9's installer puts lprun9: for every user, then for this user alone. On macOS that is the app
+    bundle in /Applications, then the one in ~/Applications; elsewhere the Windows folders, which on a system that is
+    neither are named in the message but, being no absolute path there, never looked at."""
+    if MACOS:
+        return [APPLICATIONS, posixpath.join(os.path.expanduser("~"), USER_APPLICATIONS)]
     local = os.environ.get("LOCALAPPDATA")
     return [PROGRAM_FILES, ntpath.join(local, LOCAL_PROGRAMS) if local else "%LocalAppData%\\" + LOCAL_PROGRAMS]
 
@@ -98,7 +109,7 @@ class Lprun9:
                 return os.path.abspath(place)
         raise ToolMissing(f"lprun9 was not found. Looked at --lprun (not given), env {ENV} (not set), {PROGRAM} on "
                           f"PATH, {', '.join(places)}. Install LINQPad 9, which brings lprun9, or point --lprun or "
-                          f"env {ENV} at LPRun9.exe.")
+                          f"env {ENV} at {_exe()}.")
 
     def artifact(self, out: Path, name: str) -> Path:
         """out / f"{name}.linq", with out made absolute. Computes the path; touches nothing."""
@@ -147,21 +158,26 @@ def _named(value: str, origin: str) -> str:
         found = _on_path(value)
         if found:
             return found
-        raise ToolMissing(f"{value}, which {origin} names, is not on PATH: point {origin} at LPRun9.exe by its full "
+        raise ToolMissing(f"{value}, which {origin} names, is not on PATH: point {origin} at {_exe()} by its full "
                           "path")
     path = os.path.abspath(os.path.expanduser(value))
     if not os.path.exists(path):
         elsewhere = f"leave it out to look in env {ENV}, on PATH" if origin == "--lprun" else "unset it to look on PATH"
-        raise ToolMissing(f"lprun9 was not found at {path}, which {origin} names: point {origin} at LPRun9.exe, or "
+        raise ToolMissing(f"lprun9 was not found at {path}, which {origin} names: point {origin} at {_exe()}, or "
                           f"{elsewhere} and in LINQPad 9's install folders")
     if not os.path.isfile(path):
-        raise Unusable(f"{path}, which {origin} names, is not a file: point {origin} at LPRun9.exe")
+        raise Unusable(f"{path}, which {origin} names, is not a file: point {origin} at {_exe()}")
     if WINDOWS and not path.lower().endswith(".exe"):
         raise Unusable(f"{path}, which {origin} names, is not an .exe: point {origin} at LPRun9.exe itself (a .cmd "
                        "or .bat would read the connection's name and the script's path as commands)")
     if not WINDOWS and not os.access(path, os.X_OK):
         raise Unusable(f"{path}, which {origin} names, is not executable")
     return path
+
+
+def _exe() -> str:
+    """What the tool is called where this runs: LPRun9.exe on Windows, lprun9 elsewhere."""
+    return "LPRun9.exe" if WINDOWS else PROGRAM
 
 
 def _on_path(program: str) -> str | None:

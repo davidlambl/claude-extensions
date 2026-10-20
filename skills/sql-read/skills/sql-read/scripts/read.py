@@ -35,9 +35,11 @@ Query options:
 
 Common options:
   --via lprun9            the transport that runs the batch: lprun9, LINQPad 9's runner (the default and the only one)
-  --connections FILE      the saved connections (default: env SQL_READ_CONNECTIONS, else
-                          %APPDATA%\LINQPad\ConnectionsV2.xml)
-  --lprun PATH            lprun9 itself (default: env LPRUN9, else lprun9 on PATH, else LINQPad 9's install folders)
+  --connections FILE      the saved connections (default: env SQL_READ_CONNECTIONS, else LINQPad's own list:
+                          %APPDATA%\LINQPad\ConnectionsV2.xml on Windows, ~/Library/Application Support/LINQPad/
+                          ConnectionsV2.xml on macOS)
+  --lprun PATH            lprun9 itself (default: env LPRUN9, else lprun9 on PATH, else where LINQPad 9 installs it:
+                          under Program Files or %LocalAppData% on Windows, in its app bundle on macOS)
 
 Exit codes: 0 ran; 1 the transport's tool failed (its error is shown), check printed no kind,name header, or another
 error; 2 the command line, or a --sql file that is missing, is not a regular file or is not UTF-8 text; 3 the transport's

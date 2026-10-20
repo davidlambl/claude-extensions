@@ -11,7 +11,8 @@ one. Each module exposes one factory, which read.py calls with its own command-l
 
   registries/linqpad.py   def registry(path: str | None = None) -> Registry
                           path is --connections made absolute, or None for the default: env SQL_READ_CONNECTIONS,
-                          else %APPDATA%\\LINQPad\\ConnectionsV2.xml
+                          else LINQPad's own list, as registries.linqpad.default_path finds it (%APPDATA%\\LINQPad
+                          where APPDATA is set, else ~/Library/Application Support/LINQPad on macOS)
   transports/lprun9.py    def transport(lprun: str | None = None) -> Transport
                           lprun is --lprun (absolute when it names a folder, as given when it is a bare program name),
                           or None for the default: env LPRUN9, then lprun9 on PATH, then LINQPad 9's install folders

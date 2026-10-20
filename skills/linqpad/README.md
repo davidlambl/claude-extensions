@@ -6,7 +6,7 @@ It comes as a skill: ask Claude to check how some C# behaves, or to run a `.linq
 
 ## How it works
 
-1. The skill writes a file-based app, a `.cs` file of top-level statements that needs no project, and runs it with `lprun9 <absolute path>`. The same file runs with `dotnet run <path>.cs` wherever the .NET 10 SDK is. It writes a `.linq` script instead when it needs what only LINQPad has: `Dump()`, an Expression one-liner, or your own script's saved connection.
+1. The skill writes a file-based app, a `.cs` file of top-level statements that needs no project, and runs it with `lprun9 <absolute path>`, with `-lang=program` in front when lprun9 asks for a language: 9.11.10 on Windows ran the `.cs` bare; 9.10.20 on macOS asked for a language. The same file runs with `dotnet run <path>.cs` wherever the .NET 10 SDK is. It writes a `.linq` script instead when it needs what only LINQPad has: `Dump()`, an Expression one-liner, or your own script's saved connection.
 2. `hooks/gate.py` is a PreToolUse hook on the Bash and PowerShell tools. It reads each command that names `lprun9` or a `.linq` file, and asks you before one that runs `lprun9` with `-cxname=`, or on a script whose first 8 KB hold a `<Connection>`. The prompt names the connection:
 
    ```
@@ -26,7 +26,8 @@ Console.WriteLine("file_based_app".Humanize());   // file based app
 ```
 
 ```sh
-lprun9 "C:/Users/me/AppData/Local/Temp/round.cs"
+lprun9 "C:/Users/me/AppData/Local/Temp/round.cs"                                                # 9.11.10 on Windows ran it bare
+"/Applications/LINQPad 9.app/Contents/MacOS/lprun9" -lang=program "/Users/me/scratch/round.cs"   # 9.10.20 on macOS asked for a language
 dotnet run "C:/Users/me/AppData/Local/Temp/round.cs"
 ```
 
@@ -51,18 +52,19 @@ void Main(string[] args)
 - In a `Program`, `void Main(string[] args)` gets the arguments written after the script's path: `lprun9 C:/scripts/report.linq 2026-10 Sales`.
 - `#if CMD` holds when lprun9 runs the script, and not in LINQPad's editor.
 - `Dump()` writes to stdout as text, the default `-format`; an array comes out as JSON-like lines.
-- A NuGet package, from `#:package` or `<NuGetReference>`, is fetched on the script's first run, which takes longer than the runs after it. A `.cs` file's first `dotnet run` also compiles it.
+- A NuGet package, from `#:package` or `<NuGetReference>`, is fetched on the script's first run, which takes longer than the runs after it. A `.cs` file's first `dotnet run` also compiles it. On 9.10.20 a `#:package` line is honoured under `-lang=program`: a `.cs` of `#:package Humanizer@2.14.1`, `using Humanizer;` and `Console.WriteLine("test string".Pascalize());` run so exited 0 and printed `TestString`, with `Downloading package Humanizer 2.14.1 and dependencies from https://api.nuget.org/v3/index.json` on stderr; run bare, it exited 1 with `You must specify a language (-lang=...) with this kind of script.` and printed nothing.
 - A `<Connection>` element in the header points the script at a saved connection, and the hook asks before every run of it.
 
 ## The traps
 
-lprun9 9.11.10, as tested:
+lprun9 9.11.10 on Windows, as tested, and for the `.cs` row 9.10.20 on macOS:
 
 | You might try | What happens | Instead |
 | --- | --- | --- |
 | Inline code, `lprun9 -lang=e "2 + 2"` | `Unable to locate file '2 + 2'`: a script file is mandatory | Write the code to a file |
 | `-format=json` | `Valid values are: Text, HTML, HTMLFrag, CSV, CSVi`. Text is the default | Serialize inside the script, with `System.Text.Json.JsonSerializer` |
 | A `.linq` with no header | `You must specify a language` | Write a `<Query Kind="…">` header, or pass `-lang=` |
+| A `.cs` file alone, `lprun9 app.cs` | On 9.10.20 on macOS, `You must specify a language (-lang=...) with this kind of script.`, exit 1; 9.11.10 on Windows ran it bare | When lprun9 asks for a language, pass `-lang=program` before the path; a `#:package` line is honoured there too |
 | A relative path, `lprun9 round.linq` | Looked for in the current folder, then in LINQPad's My Scripts folder, which may be a network share | Pass the absolute path |
 | `-compileonly` as a dry run of a SQL script with `-cxname=` | It blocked for over two minutes and was killed | It is no dry run: never point it at a connection |
 | `-cxname=` with a connection that has no display name | Unnamed connections are ambiguous, so it cannot be chosen | Give it a name in LINQPad |
@@ -79,7 +81,7 @@ Install it from a Claude Code prompt in a terminal:
 
 Answer `y` to add the marketplace, then choose a scope.
 
-Requirements: LINQPad 9 with `lprun9` on the `PATH` (it installs as `C:\Program Files\LINQPad9\LPRun9.exe`), or the .NET 10 SDK for `dotnet run`; and Python 3.11 or later as `python3` on the `PATH`, for the hook. Built and tested on Windows 11, with LINQPad 9.11.10 and the .NET 10 SDK.
+Requirements: LINQPad 9 with `lprun9`, or the .NET 10 SDK for `dotnet run`; and Python 3.11 or later as `python3` on the `PATH`, for the hook. On Windows `lprun9` installs as `C:\Program Files\LINQPad9\LPRun9.exe` (or `%LOCALAPPDATA%\Programs\LINQPad9\LPRun9.exe`) and is on the `PATH`; on macOS it is `/Applications/LINQPad 9.app/Contents/MacOS/lprun9` (or the same under `~/Applications`), on no `PATH` unless you put it there, so the command names it by that path, quoted, and the hook reads it there as it reads a bare `lprun9`. Built and tested on Windows 11, with LINQPad 9.11.10 and the .NET 10 SDK, and on macOS with LINQPad 9.10.20, the builds on the machines this was tested on; on the Mac a `.cs` file ran with `-lang=program`, and bare it asked for a language.
 
 To make the prompt a guarantee rather than a hook, add ask rules to your user settings, `~/.claude/settings.json`:
 
@@ -87,8 +89,10 @@ To make the prompt a guarantee rather than a hook, add ask rules to your user se
 {
   "permissions": {
     "ask": ["Bash(*un9*)", "Bash(*uN9*)", "Bash(*Un9*)", "Bash(*UN9*)", "PowerShell(*lprun9*)",
-            "Bash(*d.p*query*)", "Bash(*D.p*query*)", "Bash(*d.P*query*)", "Bash(*D.P*query*)",
-            "Bash(*d.p*check*)", "Bash(*D.p*check*)", "Bash(*d.P*check*)", "Bash(*D.P*check*)",
+            "Bash(*d.py*query*)", "Bash(*d.pY*query*)", "Bash(*d.Py*query*)", "Bash(*d.PY*query*)",
+            "Bash(*D.py*query*)", "Bash(*D.pY*query*)", "Bash(*D.Py*query*)", "Bash(*D.PY*query*)",
+            "Bash(*d.py*check*)", "Bash(*d.pY*check*)", "Bash(*d.Py*check*)", "Bash(*d.PY*check*)",
+            "Bash(*D.py*check*)", "Bash(*D.pY*check*)", "Bash(*D.Py*check*)", "Bash(*D.PY*check*)",
             "PowerShell(*read.py*query*)", "PowerShell(*read.py*check*)", "Bash(*m read *query*)",
             "Bash(*m read *check*)", "PowerShell(*m read *query*)", "PowerShell(*m read *check*)",
             "Bash(*mread *query*)", "Bash(*mread *check*)", "PowerShell(*mread *query*)",
@@ -97,7 +101,7 @@ To make the prompt a guarantee rather than a hook, add ask rules to your user se
 }
 ```
 
-The first five cover `lprun9`; the other eighteen cover sql-read's runs (its README says which forms), and cost nothing without it. A Bash pattern keeps the letter case it is written in (Claude Code compiles it to a case-sensitive match; a PowerShell pattern ignores case), and Windows ignores case in a file name, so the four Bash rules spell `un9` in each of its casings: together they match `lprun9` however it is written, `LPRUN9.EXE` and `C:/PROGRA~1/LINQPAD9/LPRUN9.EXE` included, where `Bash(*lprun9*)` alone would miss both. They also prompt for any other Bash command that holds those letters, such as `git log --grep=run9`. A PowerShell pattern ignores case, so one rule covers it. An ask rule prompts even in auto mode, and even for a command inside `cd x && …` or `$(…)`, and it holds with the plugin disabled. It cannot read a script, so it prompts for every `lprun9` run, a scratch `.cs` file included; `dotnet run` runs one without a prompt. The hook adds what a rule cannot: which connection the run touches.
+The first five cover `lprun9`; the other twenty-six cover sql-read's runs (its README says which forms), and cost nothing without it. A Bash pattern keeps the letter case it is written in (Claude Code compiles it to a case-sensitive match; a PowerShell pattern ignores case), and Windows, and macOS by default, ignore case in a file name, so the four Bash rules spell `un9` in each of its casings: together they match `lprun9` however it is written, `LPRUN9.EXE` and `C:/PROGRA~1/LINQPAD9/LPRUN9.EXE` included, where `Bash(*lprun9*)` alone would miss both. They also prompt for any other Bash command that holds those letters, such as `git log --grep=run9`. A PowerShell pattern ignores case, so one rule covers it. An ask rule prompts even in auto mode, and even for a command inside `cd x && …` or `$(…)`, and it holds with the plugin disabled. It cannot read a script, so it prompts for every `lprun9` run, a scratch `.cs` file included; `dotnet run` runs one without a prompt. The hook adds what a rule cannot: which connection the run touches.
 
 ## What it costs and touches
 

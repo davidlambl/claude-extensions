@@ -1,5 +1,6 @@
 """sql-read end to end with the real lprun9, skipped unless SQL_READ_E2E=1 and lprun9 is found where the transport
-looks for it (env LPRUN9, PATH, LINQPad 9's install folders). Run with:
+looks for it (env LPRUN9, PATH, then where LINQPad 9 installs it on Windows or macOS); the skip says where it looked.
+Run with:
 SQL_READ_E2E=1 python3 -m unittest discover -s skills/sql-read/tests
 
 plan reads the fixture's fake connections and runs nothing, so it is safe wherever lprun9 is installed. check runs
@@ -14,9 +15,10 @@ connection whose login holds a schema-scoped write grant (GRANT INSERT ON SCHEMA
 nothing else), which check and query must both refuse."""
 import csv, io, json, os, subprocess, sys, tempfile, unittest
 from pathlib import Path
+from unittest import mock
 
 from test_plan import SCRIPTS, read
-from backend import Unusable
+from backend import ToolMissing, Unusable
 from transports import lprun9
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "connections.xml"
@@ -38,14 +40,16 @@ def schema_canary():
 
 
 def find_lprun9():
-    """Where the transport finds lprun9 in this environment, or None."""
+    """(lprun9's path, None), found where the transport finds it in this environment; or (None, the transport's own
+    account of where it looked) when it is in none of those places."""
     try:
-        return lprun9.transport().locate()
-    except Unusable:
-        return None
+        return lprun9.transport().locate(), None
+    except Unusable as e:
+        return None, str(e)
 
 
-TOOL = find_lprun9() if E2E else None
+TOOL, LOOKED = find_lprun9() if E2E else (None, None)
+NOT_FOUND = LOOKED or "lprun9 was not found: install LINQPad 9, or set LPRUN9"
 
 
 def run_read(*argv, timeout=120):
@@ -55,6 +59,21 @@ def run_read(*argv, timeout=120):
                           timeout=timeout, env=env)
 
 
+class Finder(unittest.TestCase):
+    """find_lprun9() asks the transport, so these tests run against the lprun9 read.py itself would run, and when it
+    finds nothing the skip carries the transport's own account of where it looked."""
+
+    def test_it_keeps_the_transports_answer(self):
+        with mock.patch.object(lprun9.Lprun9, "locate", return_value="/opt/lprun9") as locate:
+            self.assertEqual(find_lprun9(), ("/opt/lprun9", None))
+        locate.assert_called_once_with()
+
+    def test_when_the_transport_finds_nothing_the_reason_says_where_it_looked(self):
+        looked = "lprun9 was not found. Looked at --lprun (not given), env LPRUN9 (not set), lprun9 on PATH, /x/lprun9."
+        with mock.patch.object(lprun9.Lprun9, "locate", side_effect=ToolMissing(looked)):
+            self.assertEqual(find_lprun9(), (None, looked))
+
+
 class Canary(unittest.TestCase):
     def test_the_schema_canary_passes_the_guard_so_it_can_run_as_a_query(self):
         ok, why = read.guard(schema_canary())
@@ -62,7 +81,7 @@ class Canary(unittest.TestCase):
 
 
 @unittest.skipUnless(E2E, "set SQL_READ_E2E=1 to run against the real lprun9")
-@unittest.skipUnless(TOOL, "lprun9 was not found: install LINQPad 9, or set LPRUN9")
+@unittest.skipUnless(TOOL, NOT_FOUND)
 class Plan(unittest.TestCase):
     def test_plan_against_the_fixture_names_the_real_lprun9_and_runs_nothing(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -85,7 +104,7 @@ class Plan(unittest.TestCase):
 
 
 @unittest.skipUnless(E2E, "set SQL_READ_E2E=1 to run against the real lprun9")
-@unittest.skipUnless(TOOL, "lprun9 was not found: install LINQPad 9, or set LPRUN9")
+@unittest.skipUnless(TOOL, NOT_FOUND)
 @unittest.skipUnless(CX, "set SQL_READ_E2E_CX to a saved connection's name to run check against it")
 class Check(unittest.TestCase):
     def test_check_against_the_connection_sql_read_e2e_cx_names(self):
@@ -135,7 +154,7 @@ class Check(unittest.TestCase):
 
 
 @unittest.skipUnless(E2E, "set SQL_READ_E2E=1 to run against the real lprun9")
-@unittest.skipUnless(TOOL, "lprun9 was not found: install LINQPad 9, or set LPRUN9")
+@unittest.skipUnless(TOOL, NOT_FOUND)
 @unittest.skipUnless(SCHEMA_CX, "set SQL_READ_E2E_SCHEMA_CX to a saved connection whose login holds only a schema grant")
 class SchemaGrant(unittest.TestCase):
     def test_check_and_query_refuse_a_login_whose_only_write_is_a_grant_on_a_schema(self):
