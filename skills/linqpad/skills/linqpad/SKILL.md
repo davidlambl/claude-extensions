@@ -50,5 +50,5 @@ What the script writes, `Dump()` included, comes out on stdout as text. An error
 
 - Code runs from a file, by its absolute path: never inline, never piped in.
 - Touch no saved connection from here: pass no `-cxname=`, write no `<Connection>` element or connection string into a script, and never ask the user for one. Reads from a database go through the sql-read skill. A write, even a small one, is the user's to run in LINQPad or SSMS: say so, and at most hand them the SQL.
-- Running the user's own `.linq` that holds a `<Connection>` prompts first. That prompt is the approval: do not ask again in chat, and run nothing that avoids it.
-- Never open, read or grep LINQPad's own files, in `%APPDATA%\LINQPad` or `%LOCALAPPDATA%\LINQPad` on Windows and in `~/Library/Application Support/LINQPad` on macOS. `ConnectionsV2.xml` there holds the saved connections' passwords.
+- Running the user's own `.linq` that holds a `<Connection>` prompts first. That prompt is the approval: do not ask again in chat, and run nothing that avoids it. On macOS, if the connection saved its password, the keychain may first ask the user for their login password so that `lprun9` can read it: say so before running it.
+- Never open, read or grep LINQPad's own files, in `%APPDATA%\LINQPad` or `%LOCALAPPDATA%\LINQPad` on Windows and in `~/Library/Application Support/LINQPad` on macOS, and never query the keychain for LINQPad's items: they describe the saved connections and hold their credentials.
