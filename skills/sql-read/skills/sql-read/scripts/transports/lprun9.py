@@ -54,6 +54,9 @@ WINDOWS = os.name == "nt"
 STOP_WAIT = 30  # seconds taskkill gets to stop the tree
 DRAIN_WAIT = 10  # seconds to collect what a stopped run wrote
 _NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+TASKKILL_GONE = 128  # taskkill's exit code for a process that is not there: it had already ended
+_NOT_STOPPED = (b"(taskkill could not stop lprun9's process tree (%s): the query host it started may still be "
+                b"running)\n")
 _HELD_OPEN = (b"(lprun9 was stopped, but a process it started still holds its output open: the output is left out, "
               b"and that process may still be running)\n")
 
@@ -127,9 +130,9 @@ class Lprun9:
         try:
             stdout, stderr = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            _stop(process)
+            note = _stop(process)
             stdout, stderr = _collect(process)
-            return Result(_exit(process), stdout, stderr, True, script)
+            return Result(_exit(process), stdout, stderr + note, True, script)
         except BaseException:  # an interrupt above all: lprun9 is in a group of its own, so it would go on running
             _stop(process)
             _reap(process)
@@ -226,23 +229,33 @@ def _own_group() -> dict:
     return {"creationflags": _NEW_PROCESS_GROUP} if WINDOWS else {"start_new_session": True}
 
 
-def _stop(process: subprocess.Popen) -> None:
-    """Stops process and every process it started, then kills process itself in case that missed it."""
+def _stop(process: subprocess.Popen) -> bytes:
+    """Stops process and every process it started, then kills process itself in case that missed it. Returns a note
+    for stderr when the tree may still be running, since taskkill failed: it could not run, hung, or was refused; else
+    nothing."""
+    note = b""
     if WINDOWS:
         try:
-            subprocess.run([_taskkill(), "/PID", str(process.pid), "/T", "/F"], stdin=subprocess.DEVNULL,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=STOP_WAIT)
-        except (OSError, subprocess.SubprocessError):
-            pass
+            done = subprocess.run([_taskkill(), "/PID", str(process.pid), "/T", "/F"], stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=STOP_WAIT)
+            if done.returncode not in (0, TASKKILL_GONE):
+                note = _NOT_STOPPED % f"exit code {done.returncode}".encode("ascii")
+        except subprocess.TimeoutExpired:
+            note = _NOT_STOPPED % f"no answer in {STOP_WAIT} s".encode("ascii")
+        except (OSError, subprocess.SubprocessError) as e:
+            note = _NOT_STOPPED % type(e).__name__.encode("ascii", "replace")
     else:
         try:
             os.killpg(process.pid, getattr(signal, "SIGKILL", 9))
-        except OSError:
-            pass
+        except ProcessLookupError:
+            pass  # the group had already ended
+        except OSError as e:
+            note = _NOT_STOPPED % type(e).__name__.encode("ascii", "replace")
     try:
         process.kill()
     except OSError:
         pass
+    return note
 
 
 def _taskkill() -> str:

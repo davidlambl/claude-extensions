@@ -286,6 +286,16 @@ class Unreadable(Case):
         self.assertIn(str(path), message)
         self.assertIn("too large", message)
 
+    def test_a_declared_encoding_python_does_not_know_is_refused_not_a_crash(self):
+        path = self.dir / "enc.xml"
+        path.write_bytes(f'<?xml version="1.0" encoding="bogus-{SECRET}"?><Connections/>'.encode("ascii"))
+        message = self.refusal(path)
+        self.assertIn(str(path), message)
+        self.assertIn("encoding Python does not know", message)
+        self.assertNotIn(SECRET, message)
+        code, _, err = self.main("connections", "--connections", str(path))
+        self.assertEqual(code, 3, err)
+
     def test_xml_that_does_not_parse_is_refused_with_the_place_and_no_content(self):
         for label, text in (("cut short", f"<Connections><Connection><Password>{SECRET}</Password>"),
                             ("an entity it does not know", f"<Connections><Connection><Password>{SECRET}&bogus;"

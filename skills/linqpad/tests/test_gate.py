@@ -18,7 +18,7 @@ HOOKS = PLUGIN / "hooks" / "hooks.json"
 BOTH = ("Bash", "PowerShell")
 PASSWORD = "FAKE-pw-7f3a9c2e"
 CX_TAIL = " — not through sql-read: no shape check, no row cap, no login probe"
-UNREAD = "linqpad: the gate could not read this command; approve only if you have read the SQL"
+UNREAD = "linqpad: the gate could not read this command; approve only if you have read what it runs"
 NETWORK = "a network or device path, which the gate does not open before you approve"
 SHARED =("# --- Reading a command line", "# --- The lprun9 gate")  # the section sql-read's gate copies
 
@@ -548,6 +548,14 @@ class CouldNotRead(GateCase):
         self.asks_each([f"lprun9 {self.p('missing.linq')}", f"lprun9 {self.p('missing.cs')}",
                         f"lprun9 {self.p('dir.linq')}"], starts=UNREAD)
 
+    def test_a_long_path_keeps_the_script_name_in_the_prompt(self):
+        # Windows scratch paths run past the 120 characters the prompt shows: the middle goes, not the end.
+        long = f"{self.dir.as_posix()}/{'d' * 150}/run-the-report.linq"
+        self.asks_each([f"lprun9 {long}"], starts=UNREAD, has="run-the-report.linq: the gate cannot open it")
+        reason = self.asks(f"lprun9 {long}")
+        self.assertIn("...", reason)
+        self.assertLess(max(len(line) for line in reason.split("\n")), 400)
+
     def test_a_path_the_gate_cannot_expand(self):
         self.asks_each(["lprun9 $HOME/q.linq", "lprun9 ~/q.linq", f"lprun9 {self.dir.as_posix()}/*.linq",
                         f"lprun9 {self.dir.as_posix()}/{{a,b}}.linq", f'lprun9 "$(echo {self.p("conn.linq")})"',
@@ -886,6 +894,66 @@ class HooksJson(unittest.TestCase):
                             f"timeout 60 {runner}~1.exe -cxname=Sales C:/x/fb.cs"):
                 with self.subTest(command=command):
                     self.assertTrue(self.fires("Bash", command))
+
+
+class ReadingAScriptsHead(unittest.TestCase):
+    """read_head opens only a regular file, within the time the line has, so a pipe, a device or a network path can
+    never hold the gate past its timeout, which would block the command with no reason given."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.gate = load_gate()
+
+    def setUp(self):
+        self._folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self._folder.cleanup)
+        self.dir = Path(self._folder.name)
+
+    def test_the_first_8_kb_of_a_regular_file(self):
+        path = self.dir / "q.linq"
+        path.write_bytes(b"x" * (self.gate.HEAD_BYTES + 100))
+        self.assertEqual(self.gate.read_head(str(path), time.monotonic() + 5), b"x" * self.gate.HEAD_BYTES)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "a named pipe is a POSIX matter")
+    def test_a_pipe_is_never_opened(self):
+        # Opening a FIFO nobody writes to waits for ever: read_head must answer None at once, so it is asked in a thread
+        # the test stops waiting for, and fails rather than hangs.
+        import threading
+        pipe = self.dir / "q.linq"
+        os.mkfifo(pipe)
+        answered = []
+        worker = threading.Thread(daemon=True, target=lambda: answered.append(
+            self.gate.read_head(str(pipe), time.monotonic() + 5)))
+        started = time.monotonic()
+        worker.start()
+        worker.join(3)
+        self.assertFalse(worker.is_alive(), "read_head is waiting on the pipe")
+        self.assertEqual(answered, [None])
+        self.assertLess(time.monotonic() - started, 2)
+
+    def test_a_deadline_that_has_passed_opens_nothing(self):
+        path = self.dir / "q.linq"
+        path.write_bytes(b"<Query />")
+        with mock.patch("os.stat", side_effect=AssertionError("looked")):
+            self.assertIsNone(self.gate.read_head(str(path), time.monotonic() - 1))
+
+    def test_a_file_that_does_not_answer_before_the_deadline_is_given_up_on(self):
+        # A network path can take minutes: the gate waits out the line's budget, not the path's own.
+        path = self.dir / "q.linq"
+        path.write_bytes(b"<Query />")
+        real = os.stat
+
+        def slow(target, *args, **kwargs):
+            time.sleep(2)
+            return real(target, *args, **kwargs)
+
+        started = time.monotonic()
+        with mock.patch("os.stat", slow):
+            self.assertIsNone(self.gate.read_head(str(path), time.monotonic() + 0.3))
+        self.assertLess(time.monotonic() - started, 1.5)
+
+    def test_a_missing_file_is_none(self):
+        self.assertIsNone(self.gate.read_head(str(self.dir / "missing.linq"), time.monotonic() + 5))
 
 
 class ReadingACommandLine(unittest.TestCase):

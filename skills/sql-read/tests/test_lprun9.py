@@ -379,6 +379,37 @@ class Run(Case):
                 self.assertTrue(result.timed_out)
                 self.assertEqual(fake.process.kills, 1)
 
+    def test_a_taskkill_that_fails_says_the_query_host_may_still_be_running(self):
+        # Exit 0 stopped it and 128 means it had already ended; any other outcome leaves the tree possibly running,
+        # which the result must say, as the held-open output does.
+        for outcome in (subprocess.CompletedProcess([], 1), subprocess.CompletedProcess([], 5), OSError("no taskkill"),
+                        subprocess.TimeoutExpired(["taskkill"], 30)):
+            with self.subTest(outcome=repr(outcome)):
+                fake = Fake(self, "timeout", ("ok", b"", b"", 1), windows=True)
+                patch = (mock.patch.object(lprun9.subprocess, "run", return_value=outcome)
+                         if isinstance(outcome, subprocess.CompletedProcess)
+                         else mock.patch.object(lprun9.subprocess, "run", side_effect=outcome))
+                with patch:
+                    result = lprun9.transport(self.tool).execute(SALES, BATCH, "csv", 60, self.out, "q")
+                self.assertTrue(result.timed_out)
+                self.assertIn(b"may still be running", result.stderr)
+                self.assertIn(b"taskkill could not stop", result.stderr)
+                self.assertEqual(fake.process.kills, 1)
+
+    def test_a_taskkill_that_stopped_it_or_found_it_gone_adds_no_note(self):
+        for code in (0, 128):
+            with self.subTest(code=code):
+                Fake(self, "timeout", ("ok", b"", b"late", 1), windows=True)
+                with mock.patch.object(lprun9.subprocess, "run", return_value=subprocess.CompletedProcess([], code)):
+                    result = lprun9.transport(self.tool).execute(SALES, BATCH, "csv", 60, self.out, "q")
+                self.assertEqual(result.stderr, b"late")
+
+    def test_a_process_group_that_cannot_be_killed_says_so(self):
+        Fake(self, "timeout", ("ok", b"", b"", -9), windows=False)
+        with mock.patch.object(lprun9.os, "killpg", side_effect=PermissionError, create=True):
+            result = lprun9.transport(self.tool).execute(SALES, BATCH, "csv", 60, self.out, "q")
+        self.assertIn(b"may still be running", result.stderr)
+
     def test_a_process_group_already_gone_still_ends_in_kill(self):
         fake = Fake(self, "timeout", ("ok", b"", b"", -9), windows=False)
         with mock.patch.object(lprun9.os, "killpg", side_effect=ProcessLookupError, create=True):

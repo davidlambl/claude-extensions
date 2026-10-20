@@ -5,7 +5,10 @@
       {
         "matcher": "Bash|PowerShell",
         "hooks": [
-          { "type": "command", "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/gate.py"], "if": "Bash(*read.py*)", "timeout": 10, "onFailure": "block" },
+          { "type": "command", "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/gate.py"], "if": "Bash(*d.p*)", "timeout": 10, "onFailure": "block" },
+          { "type": "command", "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/gate.py"], "if": "Bash(*D.p*)", "timeout": 10, "onFailure": "block" },
+          { "type": "command", "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/gate.py"], "if": "Bash(*d.P*)", "timeout": 10, "onFailure": "block" },
+          { "type": "command", "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/gate.py"], "if": "Bash(*D.P*)", "timeout": 10, "onFailure": "block" },
           { "type": "command", "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/gate.py"], "if": "Bash(*m read *)", "timeout": 10, "onFailure": "block" },
           { "type": "command", "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/gate.py"], "if": "Bash(*mread *)", "timeout": 10, "onFailure": "block" },
           { "type": "command", "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/gate.py"], "if": "PowerShell(*read.py*)", "timeout": 10, "onFailure": "block" },
