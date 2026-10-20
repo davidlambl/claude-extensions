@@ -119,7 +119,9 @@ class Finder(unittest.TestCase):
             os.environ["PATH"] = str(self.dir / "path")
             self.assertEqual(find_lprun9(), (tools["given"], None))
             del os.environ["LPRUN9"]
-            self.assertEqual(find_lprun9(), (tools["path"], None))
+            # On Windows shutil.which adds the extension as PATHEXT spells it (lprun9.EXE), so compare as Windows does.
+            found, reason = find_lprun9()
+            self.assertEqual((os.path.normcase(found), reason), (os.path.normcase(tools["path"]), None))
             os.environ["PATH"] = str(self.dir / "empty")
             self.assertEqual(find_lprun9(), (tools["system"], None))
             os.remove(tools["system"])
