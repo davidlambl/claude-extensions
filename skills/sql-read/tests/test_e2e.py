@@ -4,17 +4,37 @@ SQL_READ_E2E=1 python3 -m unittest discover -s skills/sql-read/tests
 
 plan reads the fixture's fake connections and runs nothing, so it is safe wherever lprun9 is installed. check runs
 against a real saved connection, the one SQL_READ_E2E_CX names, and only when that is set. Saved connections are often
-production ones: nothing but the user sets SQL_READ_E2E_CX. check sends only the login probe, which reads."""
-import json, os, subprocess, sys, tempfile, unittest
+production ones: nothing but the user sets SQL_READ_E2E_CX. check sends only the login probe, which reads.
+
+The probe's schema clause (fn_my_permissions asked for each schema by name) answers NULL, which reads as no permission,
+for a name the server cannot resolve, so a clause that matched nothing would let every login through without a word.
+Two tests are there to notice: the first, under SQL_READ_E2E_CX, asks the function for a schema by its literal name and
+again the way the probe does, and the counts must agree; the second, under SQL_READ_E2E_SCHEMA_CX, names a saved
+connection whose login holds a schema-scoped write grant (GRANT INSERT ON SCHEMA::dbo to a user in no write role, and
+nothing else), which check and query must both refuse."""
+import csv, io, json, os, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
-from test_plan import SCRIPTS
+from test_plan import SCRIPTS, read
 from backend import Unusable
 from transports import lprun9
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "connections.xml"
 E2E = os.environ.get("SQL_READ_E2E") == "1"
 CX = os.environ.get("SQL_READ_E2E_CX", "").strip()
+SCHEMA_CX = os.environ.get("SQL_READ_E2E_SCHEMA_CX", "").strip()
+CANARY_SCHEMAS = ("dbo", "sys")  # schemas every login can be asked about
+
+
+def schema_canary():
+    """One SELECT that counts, for each of CANARY_SCHEMAS, the rows fn_my_permissions gives for the schema's literal
+    name and the rows it gives for the same schema the way the probe asks, from sys.schemas through CROSS APPLY."""
+    columns = []
+    for name in CANARY_SCHEMAS:
+        columns.append(f"(SELECT COUNT(*) FROM sys.fn_my_permissions('{name}', 'SCHEMA')) AS named_{name}")
+        columns.append("(SELECT COUNT(*) FROM sys.schemas AS s CROSS APPLY sys.fn_my_permissions(s.name, 'SCHEMA') "
+                       f"AS p WHERE s.name = '{name}') AS applied_{name}")
+    return "SELECT " + ",\n       ".join(columns)
 
 
 def find_lprun9():
@@ -33,6 +53,12 @@ def run_read(*argv, timeout=120):
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONIOENCODING", "PYTHONUTF8")}
     return subprocess.run([sys.executable, str(SCRIPTS / "read.py"), *[str(a) for a in argv]], capture_output=True,
                           timeout=timeout, env=env)
+
+
+class Canary(unittest.TestCase):
+    def test_the_schema_canary_passes_the_guard_so_it_can_run_as_a_query(self):
+        ok, why = read.guard(schema_canary())
+        self.assertTrue(ok, why)
 
 
 @unittest.skipUnless(E2E, "set SQL_READ_E2E=1 to run against the real lprun9")
@@ -86,6 +112,44 @@ class Check(unittest.TestCase):
             self.assertRegex(err.strip().splitlines()[-1], r"\b2 rows\b")  # the cap, not the TOP 5
         else:
             self.assertIn("this login can write", err)
+
+    def test_the_probes_schema_clause_finds_what_the_function_gives_for_a_name(self):
+        # The probe's own form must give a schema the rows the literal name gives it. --allow-writable-login leaves
+        # the probe out of this run, so a login that can write still runs the counts.
+        with tempfile.TemporaryDirectory() as temp:
+            sql = Path(temp) / "canary.sql"
+            sql.write_text(schema_canary(), encoding="utf-8")
+            proc = run_read("query", "--cx", CX, "--sql", sql, "--allow-writable-login", "--timeout", "60",
+                            timeout=180)
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
+        rows = [r for r in csv.reader(io.StringIO(proc.stdout.decode("utf-8-sig"))) if r]
+        counts = dict(zip(rows[0], (int(v) for v in rows[1])))
+        if not any(counts[f"named_{name}"] for name in CANARY_SCHEMAS):
+            self.skipTest("this login holds no permission on dbo or sys, so a clause that matches nothing cannot be "
+                          "told from one that works")
+        for name in CANARY_SCHEMAS:
+            with self.subTest(schema=name):
+                self.assertEqual(counts[f"applied_{name}"], counts[f"named_{name}"],
+                                 "fn_my_permissions(s.name, 'SCHEMA') found nothing where the literal name finds "
+                                 "something: the probe's schema clause is not reading schemas")
+
+
+@unittest.skipUnless(E2E, "set SQL_READ_E2E=1 to run against the real lprun9")
+@unittest.skipUnless(TOOL, "lprun9 was not found: install LINQPad 9, or set LPRUN9")
+@unittest.skipUnless(SCHEMA_CX, "set SQL_READ_E2E_SCHEMA_CX to a saved connection whose login holds only a schema grant")
+class SchemaGrant(unittest.TestCase):
+    def test_check_and_query_refuse_a_login_whose_only_write_is_a_grant_on_a_schema(self):
+        check = run_read("check", "--cx", SCHEMA_CX, "--timeout", "60", timeout=180)
+        err = check.stderr.decode("utf-8", "replace")
+        self.assertEqual(check.returncode, 5, err)
+        self.assertIn("ON SCHEMA::", check.stdout.decode("utf-8", "replace"))
+        with tempfile.TemporaryDirectory() as temp:
+            sql = Path(temp) / "q.sql"
+            sql.write_text("SELECT 1 AS x", encoding="utf-8")
+            query = run_read("query", "--cx", SCHEMA_CX, "--sql", sql, "--timeout", "60", timeout=180)
+        err = query.stderr.decode("utf-8", "replace")
+        self.assertEqual(query.returncode, 5, err)
+        self.assertIn("this login can write", err)
 
 
 if __name__ == "__main__":

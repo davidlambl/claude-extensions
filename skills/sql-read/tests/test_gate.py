@@ -446,6 +446,17 @@ class Silence(GateCase):
     def test_a_plain_command(self):
         self.silent_each(["npm test", "git status", "", "python3 -m unittest discover -s skills/sql-read/tests"])
 
+    def test_what_the_d_p_patterns_start_the_gate_for_passes_in_silence(self):
+        # The Bash handlers for read.py are the fragment d.p in four casings, so they start the gate for any Bash
+        # command that holds those letters, and the README names that cost. The gate lets each of these through.
+        for command in ["ls build.py", "python3 BUILD.PY", "open word.pdf", "python3 -c 'import pandas as pd; pd.pivot'"]:
+            with self.subTest(command=command):
+                self.assertTrue(matches(hook_ifs(), "Bash", command), "no `if` pattern starts the gate")
+                self.silent(command)
+        for command in ["ls build.js", "git status", "open word.docx"]:
+            with self.subTest(command=command):
+                self.assertFalse(matches(hook_ifs(), "Bash", command), "an `if` pattern starts the gate")
+
     def test_tools_other_than_the_shells(self):
         command = f"{RUN} query --cx Sales --sql {self.p('q.sql')}"
         for tool, tool_input in [("Read", {"file_path": READ_PY}), ("Write", {"file_path": self.p("q.sql"),
