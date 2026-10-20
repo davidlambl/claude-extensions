@@ -36,7 +36,9 @@ PROBE = (
     "      ('INSERT','UPDATE','DELETE','ALTER','CONTROL','CREATE TABLE','CREATE PROCEDURE','CREATE FUNCTION',\n"
     "       'CREATE VIEW','ALTER ANY SCHEMA','TAKE OWNERSHIP','ALTER ANY USER','ALTER ANY ROLE'))\n"
     "   OR EXISTS (SELECT 1 FROM sys.schemas AS s CROSS APPLY sys.fn_my_permissions(s.name, 'SCHEMA') AS p\n"
-    "      WHERE p.permission_name IN ('INSERT','UPDATE','DELETE','ALTER','CONTROL','TAKE OWNERSHIP'))\n"
+    "      WHERE p.permission_name IN ('INSERT','UPDATE','DELETE','ALTER','CONTROL','TAKE OWNERSHIP')\n"
+    "        AND NOT (s.principal_id IN (SELECT principal_id FROM sys.database_principals WHERE is_fixed_role = 1)\n"
+    "             AND NOT EXISTS (SELECT 1 FROM sys.objects AS o WHERE o.schema_id = s.schema_id)))\n"
     "  THROW 50001, 'sql-read-guard: this login can write to this database', 1;\n")
 # What comes before the user's SQL by default, exactly as the plan lays it out.
 PRELUDE = "SET NOCOUNT ON;\nSET LOCK_TIMEOUT 5000;\n" + PROBE + "SET ROWCOUNT 200;\n"
@@ -262,6 +264,18 @@ class Batch(unittest.TestCase):
         self.assertNotIn("p.permission_name + ", read.CHECK_SQL)
         self.assertEqual(read.guard(read.CHECK_SQL), (True, "one SELECT or WITH statement"))
 
+    def test_the_probe_and_the_check_pass_over_an_empty_schema_a_fixed_role_owns(self):
+        # Each fixed database role owns a schema of its own name, so each of its members holds CONTROL, INSERT, UPDATE
+        # and the rest on that schema: a db_datareader member, the usual read-only login, controls the schema
+        # db_datareader. Such a schema holds nothing, so that is no way to write, and counting it refused every such
+        # login, as a read-only login on a real server showed on 2026-10-20. A schema is passed over only when a fixed
+        # role owns it and it holds no object, so a grant on dbo, or a role's schema that holds a table, still counts.
+        for text in (PROBE, read.CHECK_SQL):
+            self.assertIn("s.principal_id IN (SELECT principal_id FROM sys.database_principals WHERE is_fixed_role = 1)",
+                          text)
+            self.assertIn("NOT EXISTS (SELECT 1 FROM sys.objects AS o WHERE o.schema_id = s.schema_id)", text)
+        self.assertEqual(read.guard(read.CHECK_SQL), (True, "one SELECT or WITH statement"))
+
     def test_the_readme_shows_the_probe_as_it_is_sent(self):
         # The README's batch is the one place a reader sees the probe's SQL, and it drifted from the code once.
         readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
@@ -338,6 +352,16 @@ class SqlFile(Harness):
 
 
 class PlanJson(Harness):
+    def test_plan_says_when_the_connection_names_no_database(self):
+        self.use()
+        sql = self.sql_file("SELECT 1 AS x")
+        code, plan, err = self.plan("--cx", "Web-Prod", "--sql", sql)
+        self.assertEqual((code, plan["database"]), (0, None), err)
+        self.assertIn("Web-Prod names no database", err)
+        self.assertIn("Db.schema.table", err)
+        code, _, err = self.plan("--cx", "Sales", "--sql", sql)
+        self.assertNotIn("names no database", err)
+
     def test_plan_prints_every_field_and_runs_nothing(self):
         transport = self.use()
         sql = self.sql_file("SELECT TOP 20 * FROM dbo.Orders ORDER BY Created DESC")
@@ -756,6 +780,15 @@ class Reason(Harness):
         self.assertEqual(lines[1], "no row cap \u00b7 60 s timeout \u00b7 lock timeout 5 s")
         self.assertEqual(lines[-3:], ["\u26a0 writable login allowed (NOT listed in env SQL_READ_WRITABLE_OK)", "\u26a0 no row cap", "NOLOCK (dirty reads)"])
         self.assertEqual(len(self.reason("SELECT 1 AS x")), 3)
+
+    def test_a_connection_that_names_no_database_says_where_the_sql_runs(self):
+        # With no database in the connection, the SQL runs in whatever database the login opens by default; the prompt
+        # says so, for a query and for a check, and only then.
+        self.assertIn(read.NO_DATABASE, self.reason(cx="Web-Prod"))
+        self.assertNotIn(read.NO_DATABASE, self.reason(cx="Sales"))
+        check = read.reason(read.plan_for_command(["check", "--cx", "Web-Prod"])).split("\n")
+        self.assertIn(read.NO_DATABASE, check)
+        self.assertTrue(read.NO_DATABASE.startswith("\u26a0 no database"), read.NO_DATABASE)
 
     def test_a_check(self):
         lines = read.reason(read.plan_for_command(["check", "--cx", "Sales"])).split("\n")

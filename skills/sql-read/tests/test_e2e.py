@@ -12,7 +12,11 @@ for a name the server cannot resolve, so a clause that matched nothing would let
 Two tests are there to notice: the first, under SQL_READ_E2E_CX, asks the function for a schema by its literal name and
 again the way the probe does, and the counts must agree; the second, under SQL_READ_E2E_SCHEMA_CX, names a saved
 connection whose login holds a schema-scoped write grant (GRANT INSERT ON SCHEMA::dbo to a user in no write role, and
-nothing else), which check and query must both refuse."""
+nothing else), which check and query must both refuse.
+
+Under SQL_READ_E2E_READER_CX, a saved connection whose login can only read, as a db_datareader member's can, check
+must say read-only and query must run, capped. A db_datareader member controls the empty schema its role owns, which
+is no way to write; a probe that counted it would refuse every such login."""
 import csv, io, json, os, subprocess, sys, tempfile, unittest
 from pathlib import Path
 from unittest import mock
@@ -25,6 +29,7 @@ FIXTURE = Path(__file__).resolve().parent / "fixtures" / "connections.xml"
 E2E = os.environ.get("SQL_READ_E2E") == "1"
 CX = os.environ.get("SQL_READ_E2E_CX", "").strip()
 SCHEMA_CX = os.environ.get("SQL_READ_E2E_SCHEMA_CX", "").strip()
+READER_CX = os.environ.get("SQL_READ_E2E_READER_CX", "").strip()
 CANARY_SCHEMAS = ("dbo", "sys")  # schemas every login can be asked about
 
 
@@ -169,6 +174,25 @@ class SchemaGrant(unittest.TestCase):
         err = query.stderr.decode("utf-8", "replace")
         self.assertEqual(query.returncode, 5, err)
         self.assertIn("this login can write", err)
+
+
+@unittest.skipUnless(E2E, "set SQL_READ_E2E=1 to run against the real lprun9")
+@unittest.skipUnless(TOOL, NOT_FOUND)
+@unittest.skipUnless(READER_CX, "set SQL_READ_E2E_READER_CX to a saved connection whose login can only read")
+class Reader(unittest.TestCase):
+    def test_check_says_read_only_and_query_runs_to_the_cap(self):
+        check = run_read("check", "--cx", READER_CX, "--timeout", "60", timeout=180)
+        said = check.stdout.decode("utf-8", "replace") + check.stderr.decode("utf-8", "replace")
+        self.assertEqual(check.returncode, 0, said)
+        self.assertIn("read-only", said)
+        with tempfile.TemporaryDirectory() as temp:
+            sql = Path(temp) / "q.sql"
+            sql.write_text("SELECT TOP 5 object_id FROM sys.objects ORDER BY object_id", encoding="utf-8")
+            query = run_read("query", "--cx", READER_CX, "--sql", sql, "--max-rows", "2", "--timeout", "60",
+                             timeout=180)
+        err = query.stderr.decode("utf-8", "replace")
+        self.assertEqual(query.returncode, 0, err)
+        self.assertRegex(err.strip().splitlines()[-1], r"\b2 rows\b")  # the cap, not the TOP 5
 
 
 if __name__ == "__main__":

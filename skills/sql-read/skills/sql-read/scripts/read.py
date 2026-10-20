@@ -117,9 +117,14 @@ PROBE = (
     "      ('INSERT','UPDATE','DELETE','ALTER','CONTROL','CREATE TABLE','CREATE PROCEDURE','CREATE FUNCTION',\n"
     "       'CREATE VIEW','ALTER ANY SCHEMA','TAKE OWNERSHIP','ALTER ANY USER','ALTER ANY ROLE'))\n"
     "   OR EXISTS (SELECT 1 FROM sys.schemas AS s CROSS APPLY sys.fn_my_permissions(s.name, 'SCHEMA') AS p\n"
-    "      WHERE p.permission_name IN ('INSERT','UPDATE','DELETE','ALTER','CONTROL','TAKE OWNERSHIP'))\n"
+    "      WHERE p.permission_name IN ('INSERT','UPDATE','DELETE','ALTER','CONTROL','TAKE OWNERSHIP')\n"
+    "        AND NOT (s.principal_id IN (SELECT principal_id FROM sys.database_principals WHERE is_fixed_role = 1)\n"
+    "             AND NOT EXISTS (SELECT 1 FROM sys.objects AS o WHERE o.schema_id = s.schema_id)))\n"
     f"  THROW 50001, '{GUARD_MARK} this login can write to this database', 1;")
-# check's query: a row for each way the login can write; none means read-only.
+# check's query: a row for each way the login can write; none means read-only. Both it and the probe pass over a
+# schema that a fixed database role owns and that holds no object: each such role owns a schema of its own name,
+# so every db_datareader member, the usual read-only login, holds CONTROL on the empty schema db_datareader, which
+# is no way to write.
 CHECK_SQL = (
     "SELECT kind, name FROM (\n"
     "    SELECT 'role' AS kind, 'sysadmin' AS name WHERE IS_SRVROLEMEMBER('sysadmin') = 1\n"
@@ -135,10 +140,14 @@ CHECK_SQL = (
     "        (p.permission_name COLLATE DATABASE_DEFAULT) + ' ON SCHEMA::' + (s.name COLLATE DATABASE_DEFAULT)\n"
     "        FROM sys.schemas AS s CROSS APPLY sys.fn_my_permissions(s.name, 'SCHEMA') AS p\n"
     "        WHERE p.permission_name IN ('INSERT','UPDATE','DELETE','ALTER','CONTROL','TAKE OWNERSHIP')\n"
+    "        AND NOT (s.principal_id IN (SELECT principal_id FROM sys.database_principals WHERE is_fixed_role = 1)\n"
+    "            AND NOT EXISTS (SELECT 1 FROM sys.objects AS o WHERE o.schema_id = s.schema_id))\n"
     ") AS found\n"
     "ORDER BY kind DESC, name;")
 TIMED_OUT = ("if the connection signs in with Azure AD interactively, open it once in LINQPad first to cache the "
              "token")
+NO_DATABASE = "\u26a0 no database named: it runs in the login's default database"
+VERDICT_SHOWN = 5  # write capabilities check names on its stderr line; the rest are counted, and listed on stdout
 CAP_NOTE = "\u2014 cap reached; there may be more: raise --max-rows or add TOP and ORDER BY"
 
 # The plan's fields in the order read.py plan prints them: what it is a plan of, the plan's own list, then the exit
@@ -829,6 +838,8 @@ def _excerpt(sql):
 
 def _warnings(plan):
     warnings = []
+    if plan.get("command") in ("query", "check") and plan.get("server") and not plan.get("database"):
+        warnings.append(NO_DATABASE)
     if plan.get("allow_writable_login"):
         listed = "listed" if writable_ok(plan.get("connection")) else "NOT listed"
         warnings.append(f"\u26a0 writable login allowed ({listed} in env {WRITABLE_OK})")
@@ -991,7 +1002,11 @@ def _show(opts):
     _say(json.dumps(plan, indent=2, ensure_ascii=True), sys.stdout)
     if plan["exit"]:
         _say(f"sql-read: {_visible(plan['error'])}")
-    elif plan["command"] == "query" and not plan["allow_writable_login"] and writable_ok(plan["connection"]):
+        return plan["exit"]
+    if plan["server"] and not plan["database"]:
+        _say(f"sql-read: {_visible(plan['connection'])} names no database, so the SQL runs in the login's default "
+             "database: name each table with its database, as Db.schema.table, or set the database in LINQPad")
+    if plan["command"] == "query" and not plan["allow_writable_login"] and writable_ok(plan["connection"]):
         _say(f"sql-read: {_visible(plan['connection'])} is listed in {WRITABLE_OK}: if its login can write, run it as "
              f"{run_prefix()} --cx ... with the plan's other options; the prompt will say the connection is listed, "
              "and the allow rules read.py rules prints match that form")
@@ -1026,7 +1041,7 @@ def _go(opts):
     if plan["command"] == "query" and not plan["allow_writable_login"] and GUARD_MARK in _text(stderr):
         # The probe's THROW: the tool's own report of it (an error number, a stack) is left out for one clean line.
         _say(f"sql-read: {who}: this login can write to this database, so nothing ran. The login is the boundary: "
-             "use one that can only read (read.py check lists what this one can write).")
+             "use one that can only read (read.py check lists what this one can write)." + _leave(plan))
         return 5
     if result.exit != 0:
         _emit(sys.stderr, stderr)
@@ -1035,7 +1050,7 @@ def _go(opts):
         return 1
     _emit(sys.stderr, stderr)
     if plan["command"] == "check":
-        return _verdict(who, stdout)
+        return _verdict(who, stdout, plan["connection"])
     _say(_summary(who, plan, stdout, elapsed))
     return 0
 
@@ -1052,7 +1067,17 @@ def _summary(who, plan, stdout, elapsed):
     return line + f" {CAP_NOTE}" if cap and rows >= cap else line
 
 
-def _verdict(who, stdout):
+def _leave(plan):
+    """For a run the probe stopped, when the user lists its connection in SQL_READ_WRITABLE_OK: how to run it anyway,
+    in the form the allow rules read.py rules prints match. Otherwise nothing."""
+    name = plan.get("connection")
+    if not writable_ok(name):
+        return ""
+    return (f" {_visible(name.strip())} is listed in {WRITABLE_OK}, so it may run with this login: "
+            f"{run_prefix()} --cx ... with the same options; the prompt will say the connection is listed.")
+
+
+def _verdict(who, stdout, name=None):
     """check's verdict from its rows: 0 for none, read-only; 5 when the login can write. Output that does not start
     with the kind,name header, empty output included, is no verdict: exit 1, never read-only."""
     records = _records(stdout)
@@ -1065,8 +1090,13 @@ def _verdict(who, stdout):
         return 1
     found = [" ".join(_visible(f.strip()) for f in r) for r in records[1:] if any(f.strip() for f in r)]
     if found:
-        _say(f"sql-read: {who}: this login can write ({', '.join(found)}); query refuses to run with it, so ask for a "
-             "login that can only read")
+        shown = ", ".join(found[:VERDICT_SHOWN])
+        if len(found) > VERDICT_SHOWN:
+            shown += f", and {len(found) - VERDICT_SHOWN} more, listed above"
+        then = (f"; {_visible(name.strip())} is listed in {WRITABLE_OK}, so query may run with it given "
+                "--allow-writable-login") if writable_ok(name) else \
+            "; query refuses to run with it, so ask for a login that can only read"
+        _say(f"sql-read: {who}: this login can write ({shown}){then}")
         return 5
     _say(f"sql-read: {who}: read-only: no write role, no database permission and no schema permission to write "
          "(grants on single objects are not checked)")
