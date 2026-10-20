@@ -10,7 +10,7 @@ Runs C# from a script file with `lprun9`, LINQPad 9's command-line runner, and p
 ## What it needs
 
 - LINQPad 9's `lprun9` on `PATH`, installed as `C:\Program Files\LINQPad9\LPRun9.exe`. Without it, the .NET 10 SDK runs the same `.cs` file with `dotnet run`.
-- `python3` on `PATH`, for the hook. Without it, every command that names `lprun9` or a `.linq` file is blocked.
+- `python3` on `PATH`, for the hook. Without it, every command that starts the hook is blocked: in Bash, one that holds `un9` in any letter case (`git log --grep=run9` does) or names a `.linq` file; in PowerShell, one that names `lprun9` or a `.linq` file.
 
 ## Run some C#
 

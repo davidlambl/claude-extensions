@@ -97,7 +97,9 @@ _STATEMENT_WORDS = frozenset("DECLARE SET OPEN CLOSE DEALLOCATE FETCH READTEXT C
 
 # What the probe and check treat as able to write: the server role sysadmin, these database roles, these database-scope
 # permissions, and these permissions on any one schema (GRANT INSERT ON SCHEMA::dbo). Neither sees grants on single
-# objects, columns or other securables.
+# objects, columns or other securables. Each schema is asked for by its own name, as the documented SCHEMA example
+# (HAS_PERMS_BY_NAME('S', 'SCHEMA', 'ALTER')) gives it: fn_my_permissions reads a dotted name as several parts and
+# answers NULL when it finds nothing, so a schema whose name holds a dot is not reached.
 WRITE_ROLES = ("db_owner", "db_datawriter", "db_ddladmin")
 WRITE_PERMISSIONS = ("INSERT", "UPDATE", "DELETE", "ALTER", "CONTROL", "CREATE TABLE", "CREATE PROCEDURE",
                      "CREATE FUNCTION", "CREATE VIEW", "ALTER ANY SCHEMA", "TAKE OWNERSHIP", "ALTER ANY USER",
@@ -112,7 +114,7 @@ PROBE = (
     "   OR EXISTS (SELECT 1 FROM sys.fn_my_permissions(NULL, 'DATABASE') WHERE permission_name IN\n"
     "      ('INSERT','UPDATE','DELETE','ALTER','CONTROL','CREATE TABLE','CREATE PROCEDURE','CREATE FUNCTION',\n"
     "       'CREATE VIEW','ALTER ANY SCHEMA','TAKE OWNERSHIP','ALTER ANY USER','ALTER ANY ROLE'))\n"
-    "   OR EXISTS (SELECT 1 FROM sys.schemas AS s CROSS APPLY sys.fn_my_permissions(QUOTENAME(s.name), 'SCHEMA') AS p\n"
+    "   OR EXISTS (SELECT 1 FROM sys.schemas AS s CROSS APPLY sys.fn_my_permissions(s.name, 'SCHEMA') AS p\n"
     "      WHERE p.permission_name IN ('INSERT','UPDATE','DELETE','ALTER','CONTROL','TAKE OWNERSHIP'))\n"
     f"  THROW 50001, '{GUARD_MARK} this login can write to this database', 1;")
 # check's query: a row for each way the login can write; none means read-only.
@@ -127,7 +129,7 @@ CHECK_SQL = (
     "            'CREATE PROCEDURE','CREATE FUNCTION','CREATE VIEW','ALTER ANY SCHEMA','TAKE OWNERSHIP',\n"
     "            'ALTER ANY USER','ALTER ANY ROLE')\n"
     "    UNION ALL SELECT 'permission', p.permission_name + ' ON SCHEMA::' + s.name FROM sys.schemas AS s\n"
-    "        CROSS APPLY sys.fn_my_permissions(QUOTENAME(s.name), 'SCHEMA') AS p\n"
+    "        CROSS APPLY sys.fn_my_permissions(s.name, 'SCHEMA') AS p\n"
     "        WHERE p.permission_name IN ('INSERT','UPDATE','DELETE','ALTER','CONTROL','TAKE OWNERSHIP')\n"
     ") AS found\n"
     "ORDER BY kind DESC, name;")

@@ -10,7 +10,7 @@ Runs one SELECT against a SQL Server database through a connection saved in LINQ
 ## What it needs
 
 - LINQPad 9's `lprun9`: on `PATH`, in LINQPad 9's install folder, or named by the environment variable `LPRUN9`.
-- Python 3.11 or later, as `python3` on `PATH`.
+- Python 3.11 or later, as `python3` on `PATH`. The hook is a Python script: without `python3`, every command that starts it is blocked, a Bash command that holds `d.p` in any letter case (`build.py`, `word.pdf`) among them.
 - The connection saved in LINQPad with a name, and signed in with a login that can only read: `query` refuses one that can write.
 
 ## Read

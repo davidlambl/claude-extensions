@@ -35,7 +35,7 @@ PROBE = (
     "   OR EXISTS (SELECT 1 FROM sys.fn_my_permissions(NULL, 'DATABASE') WHERE permission_name IN\n"
     "      ('INSERT','UPDATE','DELETE','ALTER','CONTROL','CREATE TABLE','CREATE PROCEDURE','CREATE FUNCTION',\n"
     "       'CREATE VIEW','ALTER ANY SCHEMA','TAKE OWNERSHIP','ALTER ANY USER','ALTER ANY ROLE'))\n"
-    "   OR EXISTS (SELECT 1 FROM sys.schemas AS s CROSS APPLY sys.fn_my_permissions(QUOTENAME(s.name), 'SCHEMA') AS p\n"
+    "   OR EXISTS (SELECT 1 FROM sys.schemas AS s CROSS APPLY sys.fn_my_permissions(s.name, 'SCHEMA') AS p\n"
     "      WHERE p.permission_name IN ('INSERT','UPDATE','DELETE','ALTER','CONTROL','TAKE OWNERSHIP'))\n"
     "  THROW 50001, 'sql-read-guard: this login can write to this database', 1;\n")
 # What comes before the user's SQL by default, exactly as the plan lays it out.
@@ -239,10 +239,20 @@ class Batch(unittest.TestCase):
 
     def test_the_probe_and_the_check_look_at_schema_grants_one_schema_at_a_time(self):
         # GRANT INSERT ON SCHEMA::dbo is no database-scope permission: fn_my_permissions(NULL, 'DATABASE') lists
-        # none of it, so each schema is asked for its own, and a schema name is quoted so a dot cannot split it.
+        # none of it, so each schema is asked for its own, by its plain name. Microsoft's SCHEMA example for the
+        # sibling HAS_PERMS_BY_NAME gives the name that way, and the function answers NULL, which reads as no
+        # permission, for a name it cannot resolve: a bracketed form, which no example of this function documents
+        # for a schema, would turn the clause off without a word if the server read it differently.
         for text in (PROBE, read.CHECK_SQL):
-            self.assertIn("sys.fn_my_permissions(QUOTENAME(s.name), 'SCHEMA')", text)
+            self.assertIn("sys.fn_my_permissions(s.name, 'SCHEMA')", text)
             self.assertIn("FROM sys.schemas AS s", text)
+            self.assertNotIn("QUOTENAME", text)
+
+    def test_the_readme_shows_the_probe_as_it_is_sent(self):
+        # The README's batch is the one place a reader sees the probe's SQL, and it drifted from the code once.
+        readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
+        for line in read.PROBE.splitlines():
+            self.assertIn(line.rstrip(), readme, "README.md must show each line of the probe as it is sent")
 
 
 class SqlFile(Harness):
