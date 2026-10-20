@@ -1,5 +1,6 @@
-r"""LINQPad's saved connections as sql-read's connection registry: %APPDATA%\LINQPad\ConnectionsV2.xml read into
-Connection records (see backend.py).
+r"""LINQPad's saved connections as sql-read's connection registry: its ConnectionsV2.xml, in %APPDATA%\LINQPad on
+Windows and in ~/Library/Application Support/LINQPad on macOS (see default_path), read into Connection records (see
+backend.py).
 
 LINQPad 9 keeps the list as a <Connections> root holding one <Connection> per saved connection, each a flat run of
 settings with no attributes: ID, Server, SqlSecurity, DisplayName, Database, UniversalAuthentication, UserName,
@@ -30,12 +31,14 @@ from __future__ import annotations
 import os
 import re
 import stat
+import sys
 import xml.etree.ElementTree as ET
 from xml.parsers import expat
 
 from backend import Connection, NotFound, NotNamed
 
 ENV = "SQL_READ_CONNECTIONS"
+MACOS = sys.platform == "darwin"
 SETTINGS = frozenset({"DisplayName", "Server", "Database", "UniversalAuthentication", "SqlSecurity", "UserName",
                       "IsProduction"})
 MAX_BYTES = 16 * 1024 * 1024  # far past any real list: LINQPad saves about 1 KB a connection
@@ -46,14 +49,22 @@ _POINT = f"Point --connections or env {ENV} at LINQPad's ConnectionsV2.xml."
 
 def registry(path: str | None = None) -> LinqPadRegistry:
     r"""The registry for the list at path (--connections, made absolute), or, when path is None, at env
-    SQL_READ_CONNECTIONS, else at %APPDATA%\LINQPad\ConnectionsV2.xml. It reads nothing until asked."""
+    SQL_READ_CONNECTIONS, else at LINQPad's own list (default_path). It reads nothing until asked."""
     return LinqPadRegistry(path)
 
 
 def default_path() -> str:
-    r"""LINQPad's own list, %APPDATA%\LINQPad\ConnectionsV2.xml; ~\AppData\Roaming stands in for an unset APPDATA."""
-    appdata = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
-    return os.path.abspath(os.path.join(appdata, "LINQPad", "ConnectionsV2.xml"))
+    r"""LINQPad's own list, ConnectionsV2.xml in its settings folder: %APPDATA%\LINQPad where APPDATA is set, as it
+    always is on Windows; with it unset, ~/Library/Application Support/LINQPad on macOS, and ~\AppData\Roaming\LINQPad
+    elsewhere."""
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        folder = os.path.join(appdata, "LINQPad")
+    elif MACOS:
+        folder = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "LINQPad")
+    else:
+        folder = os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "LINQPad")
+    return os.path.abspath(os.path.join(folder, "ConnectionsV2.xml"))
 
 
 class LinqPadRegistry:

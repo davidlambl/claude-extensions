@@ -9,7 +9,7 @@ Runs C# from a script file with `lprun9`, LINQPad 9's command-line runner, and p
 
 ## What it needs
 
-- LINQPad 9's `lprun9` on `PATH`, installed as `C:\Program Files\LINQPad9\LPRun9.exe`. Without it, the .NET 10 SDK runs the same `.cs` file with `dotnet run`.
+- LINQPad 9's `lprun9`: on Windows on `PATH`, installed as `C:\Program Files\LINQPad9\LPRun9.exe`; on macOS `/Applications/LINQPad 9.app/Contents/MacOS/lprun9`, on no `PATH`, so name it by that path, quoted. Without it, the .NET 10 SDK runs the same `.cs` file with `dotnet run`.
 - `python3` on `PATH`, for the hook. Without it, every command that starts the hook is blocked: in Bash, one that holds `un9` in any letter case (`git log --grep=run9` does) or names a `.linq` file; in PowerShell, one that names `lprun9` or a `.linq` file.
 
 ## Run some C#
@@ -19,9 +19,10 @@ Runs C# from a script file with `lprun9`, LINQPad 9's command-line runner, and p
 
    ```sh
    lprun9 "C:/Users/<you>/AppData/Local/Temp/scratch/round.cs"
+   "/Applications/LINQPad 9.app/Contents/MacOS/lprun9" -lang=program "/private/tmp/<scratch>/round.cs"
    ```
 
-   `dotnet run "<path>.cs"` runs the same file wherever the .NET 10 SDK is. Its first run compiles, so it takes longer.
+   LINQPad 9.11.10 on Windows ran the file as it is. 9.10.20, the build on the Mac this was tested on, answers `You must specify a language (-lang=...) with this kind of script.` and exits 1: when lprun9 asks for a language, pass `-lang=program` before the path, as the second line does; a `#:package` line is honoured there too. `dotnet run "<path>.cs"` runs the same file wherever the .NET 10 SDK is. Its first run compiles, so it takes longer.
 3. Answer from what the run printed, not from memory.
 
 A `.linq` script is for what only LINQPad gives: `Dump()`, an Expression one-liner, or the user's own script with a saved connection. It starts with a header and a blank line:
@@ -38,7 +39,7 @@ lprun9's traps, each a common wrong guess:
 
 - It takes no inline code: `lprun9 -lang=e "2 + 2"` fails with `Unable to locate file '2 + 2'`. Write the code to a file every time; never pipe it in.
 - It has no JSON format. `-format=` takes `Text` (the default), `HTML`, `HTMLFrag`, `CSV` or `CSVi`. For JSON, serialize inside the script with `System.Text.Json.JsonSerializer.Serialize`.
-- A `.linq` with no header needs `-lang=`, or it stops with `You must specify a language`. Write the header instead.
+- A `.linq` with no header needs `-lang=`, or it stops with `You must specify a language`. Write the header instead. A `.cs` file stopped the same way on 9.10.20 on macOS: when it does, pass `-lang=program`.
 - A relative path is looked for in the current folder, then in LINQPad's My Scripts folder, so it can run some other script. Always pass the absolute path.
 
 ## What comes out
@@ -50,4 +51,4 @@ What the script writes, `Dump()` included, comes out on stdout as text. An error
 - Code runs from a file, by its absolute path: never inline, never piped in.
 - Touch no saved connection from here: pass no `-cxname=`, write no `<Connection>` element or connection string into a script, and never ask the user for one. Reads from a database go through the sql-read skill. A write, even a small one, is the user's to run in LINQPad or SSMS: say so, and at most hand them the SQL.
 - Running the user's own `.linq` that holds a `<Connection>` prompts first. That prompt is the approval: do not ask again in chat, and run nothing that avoids it.
-- Never open, read or grep LINQPad's own files in `%APPDATA%\LINQPad` or `%LOCALAPPDATA%\LINQPad`. `ConnectionsV2.xml` there holds the saved connections' passwords.
+- Never open, read or grep LINQPad's own files, in `%APPDATA%\LINQPad` or `%LOCALAPPDATA%\LINQPad` on Windows and in `~/Library/Application Support/LINQPad` on macOS. `ConnectionsV2.xml` there holds the saved connections' passwords.

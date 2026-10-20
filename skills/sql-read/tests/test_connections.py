@@ -1,7 +1,9 @@
 """The LINQPad registry, registries/linqpad.py: LINQPad's ConnectionsV2.xml read into connections, and what read.py
 connections, connections --json and --cx make of them. Run with: python3 -m unittest discover -s skills/sql-read/tests
 
-No test reads LINQPad's own list. Each one points APPDATA at a temporary folder and clears SQL_READ_CONNECTIONS, then
+No test reads LINQPad's own list. Each one points APPDATA at a temporary folder, which the registry's default honours
+on every system (a fake macOS is its MACOS flag patched, with APPDATA unset and HOME in the temporary folder), and
+clears SQL_READ_CONNECTIONS, then
 names the fixture (fixtures/connections.xml) or a list it writes, through --connections or SQL_READ_CONNECTIONS. Every
 password in them is FAKE-pw-7f3a9c2e, and no output may hold it. --cx is tried through read.py plan and query against
 test_plan's fake transport, so nothing looks for lprun9 or runs it. Characters outside ASCII are written as escapes."""
@@ -205,10 +207,33 @@ class Default(Case):
         self.assertEqual(linqpad.registry().source, expected)
         self.assertEqual(linqpad.registry(None).source, expected)
 
-    def test_without_appdata_the_default_is_under_the_home_folder(self):
+    def test_without_appdata_the_default_is_under_the_home_folder_elsewhere_than_macos(self):
         del os.environ["APPDATA"]
-        expected = os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "LINQPad", "ConnectionsV2.xml")
-        self.assertEqual(linqpad.registry().source, os.path.abspath(expected))
+        home = str(self.dir / "home")
+        with mock.patch.object(linqpad, "MACOS", False), \
+                mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home}):
+            expected = os.path.join(home, "AppData", "Roaming", "LINQPad", "ConnectionsV2.xml")
+            self.assertEqual(linqpad.registry().source, os.path.abspath(expected))
+
+    def test_on_macos_without_appdata_the_default_is_under_application_support(self):
+        del os.environ["APPDATA"]
+        home = str(self.dir / "home")
+        with mock.patch.object(linqpad, "MACOS", True), \
+                mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home}):
+            expected = os.path.abspath(os.path.join(home, "Library", "Application Support", "LINQPad",
+                                                    "ConnectionsV2.xml"))
+            self.assertEqual(linqpad.registry().source, expected)
+            with self.assertRaises(NotFound) as caught:
+                linqpad.registry().connections()
+        for said in (expected, "--connections", "SQL_READ_CONNECTIONS"):
+            self.assertIn(said, str(caught.exception))
+
+    def test_appdata_set_by_hand_wins_on_macos_too(self):
+        # A Windows machine always has APPDATA set; elsewhere only someone who means it sets it, as these tests and
+        # test_gate.py do to keep LINQPad's own list out of reach.
+        with mock.patch.object(linqpad, "MACOS", True):
+            self.assertEqual(linqpad.registry().source,
+                             os.path.join(os.environ["APPDATA"], "LINQPad", "ConnectionsV2.xml"))
 
     def test_sql_read_connections_overrides_the_default(self):
         os.environ["SQL_READ_CONNECTIONS"] = str(FIXTURE)
@@ -486,6 +511,18 @@ class Listing(Case):
                 self.assertIn(str(missing), text)
                 self.assertIn("SQL_READ_CONNECTIONS", text)
                 self.assertNotIn("Traceback", text)
+
+    def test_on_macos_a_missing_list_exits_3_naming_the_application_support_path(self):
+        del os.environ["APPDATA"]
+        home = str(self.dir / "home")
+        with mock.patch.object(linqpad, "MACOS", True), \
+                mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home}):
+            code, out, err = self.main("connections")
+        self.assertEqual((code, out), (3, b""))
+        text = err.decode("utf-8")
+        self.assertIn(os.path.join(home, "Library", "Application Support", "LINQPad", "ConnectionsV2.xml"), text)
+        self.assertIn("SQL_READ_CONNECTIONS", text)
+        self.assertNotIn("Traceback", text)
 
     def test_names_outside_ascii_reach_a_cp1252_console_as_utf8(self):
         name = "Ventes-R\u00e9el \u65e5\u672c"

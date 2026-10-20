@@ -6,7 +6,7 @@ it runs on Windows. The real-process tests start Python in lprun9's place, with 
 it, to see a run stopped together with the process it started. The lookup tests build their own PATH, LPRUN9 and
 install folders in a temporary folder. No test runs lprun9, and none names a real connection. Characters outside ASCII
 are written as escapes."""
-import io, json, ntpath, os, signal, subprocess, sys, tempfile, time, unittest
+import io, json, ntpath, os, posixpath, signal, subprocess, sys, tempfile, time, unittest
 from pathlib import Path
 from unittest import mock
 
@@ -432,7 +432,9 @@ class Run(Case):
 
 
 class Lookup(Case):
-    """Where lprun9 is found: --lprun, env LPRUN9, lprun9 on PATH, then LINQPad 9's install folders."""
+    """Where lprun9 is found: --lprun, env LPRUN9, lprun9 on PATH, then where LINQPad 9 installs it, which the WINDOWS
+    and MACOS flags choose: a fake macOS or Windows here is the flags patched, with HOME, LOCALAPPDATA and the install
+    for every user pointed into the temporary folder, so no test can find the lprun9 a real /Applications may hold."""
 
     def places(self):
         """An lprun9 in every place it is looked for, the install folders being the ones Case set up."""
@@ -441,8 +443,10 @@ class Lookup(Case):
                 "Program Files": make_tool(self.dir / "pf", "LPRun9.exe"),
                 "LocalAppData": make_tool(self.dir / "local", "LPRun9.exe")}
 
-    def test_the_lookup_order(self):
-        places = self.places()
+    def walk(self, places, system, user):
+        """locate() with a tool in every place answers --lprun, then env LPRUN9, then PATH, then the install for every
+        user (system), then the one for this user (user); with none left it raises, naming each place. Returns the
+        message."""
         os.environ["LPRUN9"] = places["LPRUN9"]
         os.environ["PATH"] = os.pathsep.join([str(self.dir / "empty"), str(self.dir / "path")])
         self.assertEqual(lprun9.transport(places["--lprun"]).locate(), places["--lprun"])
@@ -450,24 +454,68 @@ class Lookup(Case):
         del os.environ["LPRUN9"]
         self.assertEqual(lprun9.transport().locate(), places["PATH"])
         os.environ["PATH"] = str(self.dir / "empty")
-        self.assertEqual(lprun9.transport().locate(), places["Program Files"])
-        os.remove(places["Program Files"])
-        self.assertEqual(lprun9.transport().locate(), places["LocalAppData"])
-        os.remove(places["LocalAppData"])
+        self.assertEqual(lprun9.transport().locate(), os.path.abspath(system))
+        os.remove(system)
+        self.assertEqual(lprun9.transport().locate(), os.path.abspath(user))
+        os.remove(user)
         with self.assertRaises(ToolMissing) as caught:
             lprun9.transport().locate()
         message = str(caught.exception)
-        for said in ("--lprun", "LPRUN9", "PATH", str(self.dir / "pf" / "LPRun9.exe"),
-                     str(self.dir / "local" / "LPRun9.exe")):
+        for said in ("--lprun", "LPRUN9", "PATH", system, user):
             self.assertIn(said, message)
+        return message
 
-    def test_the_install_folders_are_linqpad_9s(self):
-        os.environ["LOCALAPPDATA"] = r"C:\Users\someone\AppData\Local"
-        self.assertEqual(REAL_INSTALLS(), [r"C:\Program Files\LINQPad9\LPRun9.exe",
-                                           r"C:\Users\someone\AppData\Local\Programs\LINQPad9\LPRun9.exe"])
-        del os.environ["LOCALAPPDATA"]
-        self.assertEqual(REAL_INSTALLS(), [r"C:\Program Files\LINQPad9\LPRun9.exe",
-                                           r"%LocalAppData%\Programs\LINQPad9\LPRun9.exe"])
+    def test_the_lookup_order(self):
+        places = self.places()
+        self.walk(places, places["Program Files"], places["LocalAppData"])
+
+    def test_the_lookup_order_on_windows(self):
+        local = self.dir / "Local"
+        system = str(self.dir / "Program Files" / "LINQPad9" / "LPRun9.exe")
+        user = ntpath.join(str(local), lprun9.LOCAL_PROGRAMS)
+        with mock.patch.object(lprun9, "WINDOWS", True), mock.patch.object(lprun9, "MACOS", False), \
+                mock.patch.object(lprun9, "PROGRAM_FILES", system), \
+                mock.patch.object(lprun9, "installs", REAL_INSTALLS), \
+                mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local)}):
+            places = {"--lprun": make_tool(self.dir / "given", "LPRun9.exe"),
+                      "LPRUN9": make_tool(self.dir / "env", "LPRun9.exe"),
+                      "PATH": make_tool(self.dir / "path", "lprun9.exe")}
+            make_tool(Path(system).parent, Path(system).name)
+            make_tool(Path(user).parent, Path(user).name)
+            message = self.walk(places, system, user)
+        self.assertIn("LPRun9.exe", message)
+
+    def test_the_lookup_order_on_macos(self):
+        home = self.dir / "home"
+        system = str(self.dir / "Applications" / "LINQPad 9.app" / "Contents" / "MacOS" / "lprun9")
+        user = posixpath.join(str(home), lprun9.USER_APPLICATIONS)
+        with mock.patch.object(lprun9, "WINDOWS", False), mock.patch.object(lprun9, "MACOS", True), \
+                mock.patch.object(lprun9, "APPLICATIONS", system), \
+                mock.patch.object(lprun9, "installs", REAL_INSTALLS), \
+                mock.patch.dict(os.environ, {"HOME": str(home), "USERPROFILE": str(home)}):
+            places = {"--lprun": make_tool(self.dir / "given", "lprun9"), "LPRUN9": make_tool(self.dir / "env", "lprun9"),
+                      "PATH": make_tool(self.dir / "path", "lprun9")}
+            make_tool(Path(system).parent, Path(system).name)
+            make_tool(Path(user).parent, Path(user).name)
+            message = self.walk(places, system, user)
+        self.assertIn("at lprun9.", message)  # not LPRun9.exe, which a Mac has no use for
+        self.assertNotIn("LPRun9.exe", message)
+
+    def test_on_windows_the_install_folders_are_linqpad_9s(self):
+        with mock.patch.object(lprun9, "MACOS", False):
+            os.environ["LOCALAPPDATA"] = r"C:\Users\someone\AppData\Local"
+            self.assertEqual(REAL_INSTALLS(), [r"C:\Program Files\LINQPad9\LPRun9.exe",
+                                               r"C:\Users\someone\AppData\Local\Programs\LINQPad9\LPRun9.exe"])
+            del os.environ["LOCALAPPDATA"]
+            self.assertEqual(REAL_INSTALLS(), [r"C:\Program Files\LINQPad9\LPRun9.exe",
+                                               r"%LocalAppData%\Programs\LINQPad9\LPRun9.exe"])
+
+    def test_on_macos_the_install_folders_are_linqpad_9s_app_bundle_for_every_user_then_this_one(self):
+        home = str(self.dir / "home")
+        with mock.patch.object(lprun9, "MACOS", True), \
+                mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home}):
+            self.assertEqual(REAL_INSTALLS(), ["/Applications/LINQPad 9.app/Contents/MacOS/lprun9",
+                                               posixpath.join(home, "Applications/LINQPad 9.app/Contents/MacOS/lprun9")])
 
     def test_an_install_folder_that_is_no_absolute_path_here_is_named_but_not_looked_at(self):
         # With LOCALAPPDATA unset the second place is "%LocalAppData%\...", and elsewhere than Windows even the first
@@ -482,13 +530,14 @@ class Lookup(Case):
         self.assertIn(relative, str(caught.exception))
 
     @unittest.skipIf(os.name == "nt", "on Windows the install folders' paths are absolute, and may hold lprun9")
-    def test_elsewhere_than_windows_the_install_folders_are_named_but_not_looked_at(self):
+    def test_elsewhere_than_windows_and_macos_the_install_folders_are_named_but_not_looked_at(self):
         windows = r"C:\Program Files\LINQPad9\LPRun9.exe"
         make_tool(self.dir, windows)  # a file of that very name, backslashes and all, in the current folder
         here = os.getcwd()
         os.chdir(self.dir)
         self.addCleanup(os.chdir, here)
-        with mock.patch.object(lprun9, "installs", REAL_INSTALLS), self.assertRaises(ToolMissing) as caught:
+        with mock.patch.object(lprun9, "MACOS", False), mock.patch.object(lprun9, "installs", REAL_INSTALLS), \
+                self.assertRaises(ToolMissing) as caught:
             lprun9.transport().locate()
         self.assertIn(windows, str(caught.exception))
 
