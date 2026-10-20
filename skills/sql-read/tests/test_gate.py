@@ -770,6 +770,24 @@ class Output(GateCase):
                 self.assertEqual(self.asks(command, tool), Q)
                 self.assertLess(time.monotonic() - started, 8)
 
+    def test_a_line_of_many_unsets_reads_inside_the_hooks_timeout(self):
+        # A lazy scan from every unset (and every env) to the end of its command made a crafted line quadratic: 156 KB
+        # of `unset x` took 49 s, past the hook's 10 s, and onFailure "block" then blocked a command that was never a
+        # read. Each command of the line is now scanned once from its first unset and its first env.
+        gate = load_gate()
+        started = time.monotonic()
+        self.assertIsNone(gate.sets_environment("unset x " * 7_500))
+        self.assertIsNone(gate.sets_environment("env x " * 10_000))
+        self.assertLess(time.monotonic() - started, 2)
+        # It still finds the variable an unset or an env -u names, anywhere after it in the same command, and only there.
+        self.assertEqual(gate.sets_environment("unset a b PATH; ls"), "the line changes PATH, which the plan reads")
+        self.assertEqual(gate.sets_environment("env -i --unset=LPRUN9 python3 read.py query"),
+                         "the line changes LPRUN9, which the plan reads")
+        self.assertEqual(gate.sets_environment("env -u PYTHONPATH python3 x"),
+                         "the line changes PYTHONPATH, which changes how python runs read.py")
+        self.assertIsNone(gate.sets_environment("unset a; echo PATH"))
+        self.assertIsNone(gate.sets_environment("env x | grep -u PATH"))
+
     def test_a_long_document_that_names_many_runs_reads_inside_the_hooks_timeout(self):
         line = ("Run `lprun9 -cxname=Sales script.linq` or `python3 read.py query --cx X --sql q.sql`; see "
                 "docs/notes.linq and $(nothing).\n")
