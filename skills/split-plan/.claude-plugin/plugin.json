@@ -1,0 +1,10 @@
+{
+  "name": "split-plan",
+  "version": "0.1.0",
+  "description": "Splits an implementation plan into agent workflows by model: Sonnet workstreams for a separate Claude Desktop session, started from a handoff file, and Opus stages run as a workflow in Claude Code. Says so when nothing should be delegated.",
+  "author": { "name": "David Lambl" },
+  "homepage": "https://github.com/davidlambl/claude-extensions/tree/main/skills/split-plan",
+  "repository": "https://github.com/davidlambl/claude-extensions",
+  "license": "MIT",
+  "keywords": ["planning", "workflow", "agents", "delegation", "handoff", "sonnet", "opus"]
+}

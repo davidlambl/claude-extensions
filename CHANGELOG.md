@@ -274,3 +274,9 @@ In the docs and evals:
 - A PreToolUse hook on the Bash and PowerShell tools asks before every `query` and `check`, with the plan as its reason: the connection, its server and database, the production flag, the row cap and the SQL. `plan` and `connections` never prompt. In the `bypassPermissions` and `dontAsk` modes it refuses instead.
 - `lprun9` is found by `--lprun`, the environment variable `LPRUN9`, the `PATH`, then where LINQPad 9 installs it: under Program Files or `%LOCALAPPDATA%` on Windows, in its app bundle under `/Applications` or `~/Applications` on macOS. The connection list is `%APPDATA%\LINQPad\ConnectionsV2.xml` where `APPDATA` is set, else `~/Library/Application Support/LINQPad/ConnectionsV2.xml` on macOS. Exit 3 lists every place looked at.
 - On macOS LINQPad keeps a saved password in the login keychain, not in the list, so the first run against each connection makes macOS ask for your login password to let `lprun9` read it. Always Allow stops the prompt for that connection, and the skill has Claude say so before that run.
+
+## split-plan
+
+### 0.1.0 — 2026-11-17
+
+- First version: sorts a plan's work units into main session, Sonnet (Claude Desktop, from a handoff file) and Opus (a workflow in Claude Code), states one outcome including "nothing to delegate", and carries the effort level for each kind of stage.

@@ -38,6 +38,13 @@
       "description": "Reads from a SQL Server database through a saved LINQPad connection, production included: one SELECT per run, previewed as a plan, refused when the login can write, and approved at a prompt every time.",
       "category": "skill",
       "tags": ["sql-server", "sql", "linqpad", "database", "read-only", "production"]
+    },
+    {
+      "name": "split-plan",
+      "source": "./skills/split-plan",
+      "description": "Splits an implementation plan into agent workflows by model: Sonnet workstreams for a separate Claude Desktop session, started from a handoff file, and Opus stages run as a workflow in Claude Code. Says so when nothing should be delegated.",
+      "category": "skill",
+      "tags": ["planning", "workflow", "agents", "delegation", "handoff"]
     }
   ]
 }

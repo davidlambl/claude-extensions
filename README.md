@@ -11,6 +11,7 @@ Mods and skills for [Claude Code](https://claude.com/claude-code), each packaged
 | [ado-evidence](skills/ado-evidence/) | skill | Posts images with captions as a comment on an Azure DevOps work item, or revises one, and checks that each image rendered. Cuts a screenshot down first, with no imaging library. |
 | [linqpad](skills/linqpad/) | skill | Runs C# and .NET code with LINQPad 9's `lprun9`, as a .NET 10 file-based app or a `.linq` script, and asks before any run that touches a saved LINQPad connection. |
 | [sql-read](skills/sql-read/) | skill | Reads from a SQL Server database through a saved LINQPad connection, production included: one SELECT per run, previewed as a plan, refused when the login can write, and approved at a prompt every time. |
+| [split-plan](skills/split-plan/) | skill | Splits an implementation plan into agent workflows by model: Sonnet workstreams for a separate Claude Desktop session, started from a handoff file, and Opus stages run as a workflow in Claude Code. Says so when nothing should be delegated. |
 
 ## Install
 
@@ -22,6 +23,7 @@ From a Claude Code prompt in a terminal:
 /plugin install ado-evidence --marketplace davidlambl/claude-extensions
 /plugin install linqpad --marketplace davidlambl/claude-extensions
 /plugin install sql-read --marketplace davidlambl/claude-extensions
+/plugin install split-plan --marketplace davidlambl/claude-extensions
 ```
 
 Answer `y` to add the marketplace, then choose a scope. Mods need Claude Code 2.1.287 or later.
